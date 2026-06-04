@@ -134,7 +134,12 @@ fn locate_catalog(volume: &[u8]) -> Option<CatalogLoc> {
     if node_size < 14 {
         return None;
     }
-    Some(CatalogLoc { cat_base, node_size, first_leaf, block_size })
+    Some(CatalogLoc {
+        cat_base,
+        node_size,
+        first_leaf,
+        block_size,
+    })
 }
 
 /// Walk the catalog leaf-node chain, invoking `f` with each record slice.
@@ -143,8 +148,9 @@ fn for_each_record(volume: &[u8], loc: &CatalogLoc, mut f: impl FnMut(&[u8])) {
     let mut walked = 0u32;
     while node != 0 && walked < MAX_LEAF_NODES {
         walked += 1;
-        let Some(node_off) =
-            (node as usize).checked_mul(loc.node_size).and_then(|x| x.checked_add(loc.cat_base))
+        let Some(node_off) = (node as usize)
+            .checked_mul(loc.node_size)
+            .and_then(|x| x.checked_add(loc.cat_base))
         else {
             break;
         };
@@ -156,7 +162,9 @@ fn for_each_record(volume: &[u8], loc: &CatalogLoc, mut f: impl FnMut(&[u8])) {
         let num_records = be16(&nd[10..12]) as usize;
         for i in 0..num_records {
             // Record offsets are stored backwards from the node end.
-            let Some(slot) = loc.node_size.checked_sub(2 * (i + 1)) else { break };
+            let Some(slot) = loc.node_size.checked_sub(2 * (i + 1)) else {
+                break;
+            };
             let rec = be16(&nd[slot..slot + 2]) as usize;
             if rec + 8 <= loc.node_size {
                 f(&nd[rec..]);
@@ -287,7 +295,10 @@ fn file_data_fork(rec: &[u8], cnid: u32) -> Option<(u64, Vec<(u32, u32)>)> {
 
 /// Decode a big-endian UTF-16 byte slice to a `String` (lossy).
 fn decode_utf16(bytes: &[u8]) -> String {
-    let units: Vec<u16> = bytes.chunks_exact(2).map(|c| u16::from_be_bytes([c[0], c[1]])).collect();
+    let units: Vec<u16> = bytes
+        .chunks_exact(2)
+        .map(|c| u16::from_be_bytes([c[0], c[1]]))
+        .collect();
     String::from_utf16_lossy(&units)
 }
 
