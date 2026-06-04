@@ -1,0 +1,15 @@
+[package]
+name = "hfsplus-forensic"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+license = "MIT"
+description = "Forensic-grade, from-scratch Apple HFS+/HFSX reader — volume header geometry, catalog B-tree directory listing, and data-fork file extraction over a byte buffer"
+repository = "https://github.com/SecurityRonin/hfsplus-forensic"
+keywords = ["forensics", "hfs", "hfsplus", "filesystem", "dfir"]
+categories = ["parser-implementations", "filesystem"]
+
+[dependencies]
+
+[lints.rust]
+unsafe_code = "forbid"
