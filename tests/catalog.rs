@@ -85,3 +85,27 @@ fn list_dir_of_empty_subdir_is_empty() {
 fn read_file_unknown_cnid_is_none() {
     assert!(hfs::read_file(&volume(), 999_999).is_none());
 }
+
+fn nested() -> Vec<u8> {
+    std::fs::read(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/data/hfs_plus_nested.bin"
+    ))
+    .unwrap()
+}
+
+#[test]
+fn walk_lists_nested_paths() {
+    let vol = nested();
+    let entries = hfs::walk(&vol).expect("walk HFS+ volume");
+    let paths: Vec<&str> = entries.iter().map(|e| e.path.as_str()).collect();
+    assert!(paths.contains(&"TOP.TXT"), "paths: {paths:?}");
+    assert!(paths.contains(&"SUB"), "paths: {paths:?}");
+    assert!(paths.contains(&"SUB/NESTED.TXT"), "paths: {paths:?}");
+    let nested_file = entries.iter().find(|e| e.path == "SUB/NESTED.TXT").unwrap();
+    assert!(!nested_file.is_dir);
+    assert_eq!(
+        hfs::read_file(&vol, nested_file.cnid).unwrap(),
+        b"nested data"
+    );
+}

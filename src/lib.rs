@@ -6,10 +6,10 @@
 //! volume start (TN1150 §"Volume Header"), with a big-endian `H+` (HFS+) or `HX`
 //! (HFSX) signature.
 //!
-//! This module reads the volume header for *detection and volume geometry*
-//! (signature, version, allocation block size, block counts).  Full HFS+
-//! catalog (B-tree) traversal — listing files — is not implemented.  Validated
-//! against a real `hdiutil`-created HFS+ volume header.
+//! This crate reads the volume header (geometry), walks the catalog B-tree to
+//! list directories ([`list_root`], [`list_dir`], recursive [`walk`]), and
+//! extracts file data forks ([`read_file`]).  Journal replay and resource forks
+//! are out of scope.  Validated against real `hdiutil`-created HFS+ volumes.
 
 /// Byte offset of the HFS+ volume header from the start of the volume.
 const VOLUME_HEADER_OFFSET: usize = 1024;
@@ -307,4 +307,51 @@ fn be16(b: &[u8]) -> u16 {
 }
 fn be32(b: &[u8]) -> u32 {
     u32::from_be_bytes([b[0], b[1], b[2], b[3]])
+}
+
+/// A path-qualified entry produced by [`walk`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HfsPathEntry {
+    /// `/`-joined path from the volume root (e.g. `"SUB/NESTED.TXT"`).
+    pub path: String,
+    /// True for a folder.
+    pub is_dir: bool,
+    /// Catalog node ID (CNID).
+    pub cnid: u32,
+}
+
+/// Recursively list every file and folder in an HFS+ volume, depth-first from
+/// the root, returning `/`-joined paths.
+///
+/// Returns `None` if this is not an HFS+ volume.  A visited-CNID set guards
+/// against cycles in a corrupt catalog.
+#[must_use]
+pub fn walk(volume: &[u8]) -> Option<Vec<HfsPathEntry>> {
+    // Confirm this is an HFS+ volume up front so a non-HFS buffer yields None.
+    list_dir(volume, ROOT_FOLDER_CNID)?;
+    let mut out = Vec::new();
+    let mut visited = std::collections::HashSet::new();
+    visited.insert(ROOT_FOLDER_CNID);
+    let mut stack = vec![(ROOT_FOLDER_CNID, String::new())];
+    while let Some((parent, prefix)) = stack.pop() {
+        let Some(entries) = list_dir(volume, parent) else {
+            continue;
+        };
+        for e in entries {
+            let path = if prefix.is_empty() {
+                e.name.clone()
+            } else {
+                format!("{prefix}/{}", e.name)
+            };
+            if e.is_dir && visited.insert(e.cnid) {
+                stack.push((e.cnid, path.clone()));
+            }
+            out.push(HfsPathEntry {
+                path,
+                is_dir: e.is_dir,
+                cnid: e.cnid,
+            });
+        }
+    }
+    Some(out)
 }
