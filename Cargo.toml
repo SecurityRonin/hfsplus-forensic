@@ -6,6 +6,9 @@ rust-version = "1.85"
 license = "MIT"
 description = "Forensic-grade, from-scratch Apple HFS+/HFSX reader — volume header geometry, catalog B-tree directory listing, and data-fork file extraction over a byte buffer"
 repository = "https://github.com/SecurityRonin/hfsplus-forensic"
+homepage = "https://github.com/SecurityRonin/hfsplus-forensic"
+documentation = "https://docs.rs/hfsplus-forensic"
+readme = "README.md"
 keywords = ["forensics", "hfs", "hfsplus", "filesystem", "dfir"]
 categories = ["parser-implementations", "filesystem"]
 
