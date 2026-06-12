@@ -353,6 +353,85 @@ mod tests {
         assert_eq!(out, data);
     }
 
+    /// Build an even-type chunked resource fork (`HFSPlusCmpfLZVNRsrcHead`):
+    /// little-endian `headerSize` then one end-offset per chunk.
+    fn chunked_fork(chunks: &[Vec<u8>]) -> Vec<u8> {
+        let header_size = 4 * (chunks.len() + 1);
+        let mut fork = Vec::new();
+        fork.extend_from_slice(&(header_size as u32).to_le_bytes());
+        let mut end = header_size;
+        for c in chunks {
+            end += c.len();
+            fork.extend_from_slice(&(end as u32).to_le_bytes());
+        }
+        for c in chunks {
+            fork.extend_from_slice(c);
+        }
+        fork
+    }
+
+    fn lzfse_stream(data: &[u8]) -> Vec<u8> {
+        let mut s = Vec::new();
+        lzfse_rust::encode_bytes(data, &mut s).expect("encode");
+        s
+    }
+
+    // ── LZFSE resource fork (type 12), round-tripped through the real codec ──
+    #[test]
+    fn decodes_lzfse_resource_fork_multi_chunk() {
+        let words = include_bytes!("../tests/data/decmpfs/zlib.expected"); // ~150KB real text
+        let data = &words[..80_000]; // 64KiB + 16000 → two chunks
+        let c0 = lzfse_stream(&data[..CHUNK_SIZE]);
+        let c1 = lzfse_stream(&data[CHUNK_SIZE..]);
+        let fork = chunked_fork(&[c0, c1]);
+        let hdr = header(12, data.len() as u64);
+        let out = decompress(&hdr, Some(&fork)).expect("type-12 LZFSE must decode");
+        assert_eq!(out, data);
+    }
+
+    // ── inline LZFSE (type 11) ──
+    #[test]
+    fn decodes_inline_lzfse() {
+        let data = b"LZFSE inline payload: the quick brown fox jumps over the lazy dog.";
+        let x = xattr(11, data.len() as u64, &lzfse_stream(data));
+        let out = decompress(&x, None).expect("type-11 inline LZFSE must decode");
+        assert_eq!(out, data);
+    }
+
+    // ── uncompressed resource fork (type 10): verbatim chunks ──
+    #[test]
+    fn decodes_uncompressed_resource_fork() {
+        let mut data = Vec::new();
+        for i in 0..(CHUNK_SIZE + 5000) {
+            data.push((i % 251) as u8);
+        }
+        let c0 = data[..CHUNK_SIZE].to_vec();
+        let c1 = data[CHUNK_SIZE..].to_vec();
+        let fork = chunked_fork(&[c0, c1]);
+        let hdr = header(10, data.len() as u64);
+        let out = decompress(&hdr, Some(&fork)).expect("type-10 uncompressed fork must decode");
+        assert_eq!(out, data);
+    }
+
+    // ── inline uncompressed variant (type 9) ──
+    #[test]
+    fn decodes_inline_uncompressed_type9() {
+        let data = b"type 9 is uncompressed-inline, a variant of type 1";
+        let x = xattr(9, data.len() as u64, data);
+        assert_eq!(decompress(&x, None).expect("type-9 must decode"), data);
+    }
+
+    // ── a wrong uncompressed_size must fail loud, not return a short buffer ──
+    #[test]
+    fn length_mismatch_is_loud() {
+        let data = b"the quick brown fox";
+        let x = xattr(1, 999, data); // claim 999, payload is 19
+        assert!(matches!(
+            decompress(&x, None),
+            Err(DecmpfsError::LengthMismatch { expected: 999, .. })
+        ));
+    }
+
     // ── fail-loud arms ──
     #[test]
     fn rejects_bad_magic() {
