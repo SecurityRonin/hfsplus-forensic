@@ -173,20 +173,23 @@ fn decode_resource_fork(
 fn decode_zlib_resource_fork(fork: &[u8], uncompressed_size: usize) -> Result<Vec<u8>> {
     // HFSPlusCmpfRsrcHead: big-endian headerSize, totalSize, dataSize, flags.
     let header_size = be_u32(fork, 0)? as usize;
-    // Block table at `header_size`: big-endian dataSize, little-endian numBlocks,
-    // then numBlocks × (offset, size) little-endian. Offsets are relative to
-    // `header_size` (the start of the resource data).
-    let num_blocks = le_u32(fork, header_size.checked_add(4).ok_or(DecmpfsError::OutOfBounds)?)?
-        as usize;
+    // At `header_size`: a big-endian total-size prefix (4 bytes), then the block
+    // table proper — little-endian numBlocks, then numBlocks × (offset, size)
+    // little-endian. Block offsets are relative to `header_size + 4` (the start
+    // of the block table, i.e. the numBlocks field), NOT to `header_size`.
+    // (Verified against real afsctool/macOS forks — a synthetic round-trip can
+    // pass with the wrong base because it is self-consistent.)
+    let table = header_size.checked_add(4).ok_or(DecmpfsError::OutOfBounds)?;
+    let num_blocks = le_u32(fork, table)? as usize;
     let mut out = Vec::with_capacity(uncompressed_size);
     for i in 0..num_blocks {
-        let entry = header_size
-            .checked_add(8)
+        let entry = table
+            .checked_add(4)
             .and_then(|b| b.checked_add(i.checked_mul(8)?))
             .ok_or(DecmpfsError::OutOfBounds)?;
         let offset = le_u32(fork, entry)? as usize;
         let size = le_u32(fork, entry + 4)? as usize;
-        let start = header_size.checked_add(offset).ok_or(DecmpfsError::OutOfBounds)?;
+        let start = table.checked_add(offset).ok_or(DecmpfsError::OutOfBounds)?;
         let end = start.checked_add(size).ok_or(DecmpfsError::OutOfBounds)?;
         let block = fork.get(start..end).ok_or(DecmpfsError::OutOfBounds)?;
         out.extend_from_slice(&inflate(block)?);
@@ -204,10 +207,18 @@ fn decode_chunked_resource_fork(
     let header_size = le_u32(fork, 0)? as usize;
     // The header holds headerSize/4 − 1 chunk end-offsets (the first u32 is the
     // headerSize itself). Chunk data begins at `header_size`.
-    let n_chunks = (header_size / 4).checked_sub(1).ok_or(DecmpfsError::OutOfBounds)?;
+    // headerSize/4 − 1 is an *upper bound* on the chunk count: the compressor may
+    // over-allocate the end-offset table and zero-pad the unused slots (observed
+    // in afsctool LZFSE forks). The true count is ceil(uncompressed_size /
+    // CHUNK_SIZE); the loop stops once it has produced that many bytes, never
+    // reading a zero-padding slot.
+    let n_slots = (header_size / 4).checked_sub(1).ok_or(DecmpfsError::OutOfBounds)?;
     let mut out = Vec::with_capacity(uncompressed_size);
     let mut src = header_size;
-    for i in 0..n_chunks {
+    for i in 0..n_slots {
+        if out.len() >= uncompressed_size {
+            break;
+        }
         let end = le_u32(fork, 4 + i * 4)? as usize;
         if end < src {
             return Err(DecmpfsError::OutOfBounds);
@@ -314,23 +325,23 @@ mod tests {
         assert_eq!(out, expected, "decoded bytes must match the original file");
     }
 
-    // ── zlib resource fork (type 4), independent python-zlib block table ──
+    // ── REAL macOS zlib resource fork (type 4), minted by afsctool -T ZLIB ──
     #[test]
-    fn decodes_zlib_resource_fork_multi_block() {
-        let fork = include_bytes!("../tests/data/decmpfs/zlib_type4.rsrc");
+    fn decodes_real_macos_zlib_resource_fork() {
+        let fork = include_bytes!("../tests/data/decmpfs/real_zlib_rsrc.rsrc");
         let expected = include_bytes!("../tests/data/decmpfs/zlib.expected");
         let hdr = header(4, expected.len() as u64);
-        let out = decompress(&hdr, Some(fork)).expect("type-4 zlib must decode");
+        let out = decompress(&hdr, Some(fork)).expect("real type-4 zlib must decode");
         assert_eq!(out, expected);
     }
 
-    // ── inline zlib (type 3) ──
+    // ── REAL macOS inline zlib (type 3), afsctool -T ZLIB on a small file ──
     #[test]
-    fn decodes_inline_zlib() {
-        let payload = include_bytes!("../tests/data/decmpfs/zlib_type3_inline.payload");
-        let expected = include_bytes!("../tests/data/decmpfs/zlib_inline.expected");
+    fn decodes_real_macos_inline_zlib() {
+        let payload = include_bytes!("../tests/data/decmpfs/real_zlib_inline.payload");
+        let expected = include_bytes!("../tests/data/decmpfs/real_zlib_inline.expected");
         let x = xattr(3, expected.len() as u64, payload);
-        let out = decompress(&x, None).expect("type-3 inline zlib must decode");
+        let out = decompress(&x, None).expect("real type-3 inline zlib must decode");
         assert_eq!(out, expected);
     }
 
@@ -370,32 +381,24 @@ mod tests {
         fork
     }
 
-    fn lzfse_stream(data: &[u8]) -> Vec<u8> {
-        let mut s = Vec::new();
-        lzfse_rust::encode_bytes(data, &mut s).expect("encode");
-        s
+    // ── REAL macOS LZFSE resource fork (type 12), minted by afsctool -T LZFSE ──
+    #[test]
+    fn decodes_real_macos_lzfse_resource_fork() {
+        let fork = include_bytes!("../tests/data/decmpfs/real_lzfse_rsrc.rsrc");
+        let expected = include_bytes!("../tests/data/decmpfs/zlib.expected"); // 150K real text
+        let hdr = header(12, expected.len() as u64);
+        let out = decompress(&hdr, Some(fork)).expect("real type-12 LZFSE must decode");
+        assert_eq!(out, expected);
     }
 
-    // ── LZFSE resource fork (type 12), round-tripped through the real codec ──
+    // ── REAL macOS inline LZFSE (type 11), afsctool -T LZFSE on a small file ──
     #[test]
-    fn decodes_lzfse_resource_fork_multi_chunk() {
-        let words = include_bytes!("../tests/data/decmpfs/zlib.expected"); // ~150KB real text
-        let data = &words[..80_000]; // 64KiB + 16000 → two chunks
-        let c0 = lzfse_stream(&data[..CHUNK_SIZE]);
-        let c1 = lzfse_stream(&data[CHUNK_SIZE..]);
-        let fork = chunked_fork(&[c0, c1]);
-        let hdr = header(12, data.len() as u64);
-        let out = decompress(&hdr, Some(&fork)).expect("type-12 LZFSE must decode");
-        assert_eq!(out, data);
-    }
-
-    // ── inline LZFSE (type 11) ──
-    #[test]
-    fn decodes_inline_lzfse() {
-        let data = b"LZFSE inline payload: the quick brown fox jumps over the lazy dog.";
-        let x = xattr(11, data.len() as u64, &lzfse_stream(data));
-        let out = decompress(&x, None).expect("type-11 inline LZFSE must decode");
-        assert_eq!(out, data);
+    fn decodes_real_macos_inline_lzfse() {
+        let payload = include_bytes!("../tests/data/decmpfs/real_lzfse_inline.payload");
+        let expected = include_bytes!("../tests/data/decmpfs/real_zlib_inline.expected");
+        let x = xattr(11, expected.len() as u64, payload);
+        let out = decompress(&x, None).expect("real type-11 inline LZFSE must decode");
+        assert_eq!(out, expected);
     }
 
     // ── uncompressed resource fork (type 10): verbatim chunks ──
