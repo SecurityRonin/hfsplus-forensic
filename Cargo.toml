@@ -13,6 +13,15 @@ keywords = ["forensics", "hfs", "hfsplus", "filesystem", "dfir"]
 categories = ["parser-implementations", "filesystem"]
 
 [dependencies]
+# decmpfs transparent-compression codecs (reuse, not reinvent):
+#   zlib/DEFLATE (types 3/4) and LZVN/LZFSE (types 7/8/11/12).
+# Both are pure-Rust, keeping `unsafe_code = "forbid"` intact.
+flate2 = "1"
+lzfse_rust = "0.2"
+# decmpfs format knowledge (magic, type→algorithm/storage map, chunk size).
+# Path dep during the coordinated decmpfs change; switch to the registry version
+# once forensicnomicon 0.4.3 (the decmpfs module) is published.
+forensicnomicon = { path = "../forensicnomicon" }
 
 [lints.rust]
 unsafe_code = "forbid"

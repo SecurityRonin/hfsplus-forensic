@@ -11,6 +11,8 @@
 //! extracts file data forks ([`read_file`]).  Journal replay and resource forks
 //! are out of scope.  Validated against real `hdiutil`-created HFS+ volumes.
 
+pub mod decmpfs;
+
 /// Byte offset of the HFS+ volume header from the start of the volume.
 const VOLUME_HEADER_OFFSET: usize = 1024;
 /// HFS+ signature `H+` (TN1150).
