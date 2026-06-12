@@ -19,12 +19,18 @@ are needed for `include_bytes!`/`std::fs::read` in tests).
 
 ## decmpfs (transparent-compression) fixtures — `tests/data/decmpfs/`
 
-The marquee `lzvn.rsrc` and `hfs_decmpfs_volume.bin` are **REAL macOS LZVN**
-output (`ditto --hfsCompression`); the oracle is the original pre-compression
-bytes. The zlib fixtures are minted with Python's `zlib` (an independent DEFLATE
-implementation, not the `flate2` we test) in the documented block-table layout.
-macOS hides the `com.apple.decmpfs` xattr from the normal xattr API; its
-compression type was read via `getxattr(..., XATTR_SHOWCOMPRESSION)`.
+**Every codec is validated against REAL macOS-produced decmpfs bytes**, the
+oracle being the original pre-compression file. LZVN (types 7/8) come from
+`ditto --hfsCompression`; zlib (3/4) and LZFSE (11/12) from `afsctool -c -T
+ZLIB|LZFSE` (both drive Apple's real AppleFSCompression framework — macOS itself
+ships only LZVN, so these are the only way to obtain real zlib/LZFSE artifacts).
+The sole synthetic fixture is the type-3 `0xFF`-"stored" payload, which the real
+compressor never emits. macOS hides `com.apple.decmpfs` from the normal xattr
+API; its compression type was read via `getxattr(..., XATTR_SHOWCOMPRESSION)`.
+
+Real data earned its keep here: it exposed two bugs that self-consistent
+synthetic fixtures had passed — zlib block offsets are relative to
+`headerSize+4` (not `headerSize`), and LZFSE forks zero-pad their chunk table.
 
 #### lzvn.rsrc + lzvn.expected — `REAL-self`
 
@@ -46,20 +52,26 @@ compression type was read via `getxattr(..., XATTR_SHOWCOMPRESSION)`.
   detach. The test regenerates the payload from the same LCG (no expected
   fixture committed).
 
-#### zlib_type4.rsrc + zlib.expected — `SYNTHETIC` (independent oracle)
+#### real_zlib_rsrc.rsrc / real_lzfse_rsrc.rsrc + zlib.expected — `REAL-self`
 
-- **Identity:** a decmpfs **type 4 (zlib resource fork)** block table — classic
-  Resource-Manager header + 3 × 64 KiB zlib blocks — over 150000 bytes of real
-  `/usr/share/dict/words`, built with Python `zlib`.
-- **Generator:** `python3` builds `HFSPlusCmpfRsrcHead` (BE headerSize=0x100,
-  totalSize, dataSize, flags) + block table (BE dataSize, LE numBlocks, LE
-  (offset,size)[]) + `zlib.compress(chunk, 6)` per 64 KiB. See the corpus
-  catalog for the verbatim builder.
+- **Identity:** real resource forks of decmpfs **type 4 (zlib)** and **type 12
+  (LZFSE)** files over 150000 bytes of `/usr/share/dict/words`. Both decode to
+  `zlib.expected` (the shared 150 KB original).
+- **Generator:** `head -c 150000 /usr/share/dict/words > f; afsctool -c -T ZLIB f`
+  (resp. `-T LZFSE`); `cp 'f/..namedfork/rsrc' real_zlib_rsrc.rsrc`.
 
-#### zlib_type3_inline.payload / zlib_type3_stored.payload + zlib_inline.expected — `SYNTHETIC`
+#### real_zlib_inline.payload / real_lzfse_inline.payload + real_zlib_inline.expected — `REAL-self`
 
-- **Identity:** decmpfs **type 3 inline** payloads over 3000 bytes of real dict
-  words: one a `zlib.compress` stream, one a `0xFF`-prefixed verbatim ("stored")
-  payload. The test prepends a 16-byte decmpfs header.
-- **Generator:** `python3 -c "import zlib; zlib.compress(words[:3000], 6)"` and
-  `b'\xff' + words[:3000]`.
+- **Identity:** real **inline** (xattr) payloads of decmpfs **type 3 (zlib)** and
+  **type 11 (LZFSE)** over 2000 bytes of dict words. The test prepends a 16-byte
+  decmpfs header. (Apple frames small "LZFSE" inline data as an LZVN `bvxn`
+  block.)
+- **Generator:** `head -c 2000 ... > f; afsctool -c -T ZLIB f` (resp. `-T LZFSE`);
+  the inline payload is `getxattr(f, "com.apple.decmpfs", XATTR_SHOWCOMPRESSION)[16:]`.
+
+#### zlib_type3_stored.payload + zlib_inline.expected — `SYNTHETIC` (only synthetic fixture)
+
+- **Identity:** decmpfs **type 3 inline** with the `0xFF` "stored" marker (the
+  payload did not compress, so the remainder is verbatim) over 3000 bytes of dict
+  words. Apple's real compressor never emits this, so it is built by hand.
+- **Generator:** `b'\xff' + words[:3000]`.
