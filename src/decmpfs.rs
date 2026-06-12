@@ -93,9 +93,195 @@ type Result<T> = std::result::Result<T, DecmpfsError>;
 /// missing resource fork, codec failure, or output-length mismatch. It never
 /// returns a partially-decoded buffer as success.
 pub fn decompress(xattr: &[u8], resource_fork: Option<&[u8]>) -> Result<Vec<u8>> {
-    // RED stub — replaced by the real decoder in the GREEN commit.
-    let _ = (xattr, resource_fork, MAGIC, HEADER_LEN, CHUNK_SIZE);
-    Err(DecmpfsError::Codec("unimplemented"))
+    if xattr.len() < HEADER_LEN {
+        return Err(DecmpfsError::Truncated);
+    }
+    let magic = le_u32(xattr, 0)?;
+    if magic != MAGIC {
+        return Err(DecmpfsError::BadMagic(magic));
+    }
+    let compression_type = le_u32(xattr, decmpfs::COMPRESSION_TYPE_OFFSET)?;
+    let uncompressed_size = le_u64(xattr, decmpfs::UNCOMPRESSED_SIZE_OFFSET)? as usize;
+
+    let Some(kind) = decmpfs::classify(compression_type) else {
+        return Err(match compression_type {
+            5 => DecmpfsError::Unsupported("decmpfs type 5 (de-dup generation store)"),
+            other => DecmpfsError::UnknownType(other),
+        });
+    };
+    if kind.algorithm == Algorithm::LzBitmap {
+        return Err(DecmpfsError::Unsupported("decmpfs LZBitmap (no public spec)"));
+    }
+
+    let out = match kind.storage {
+        Storage::Inline => {
+            let payload = xattr.get(HEADER_LEN..).ok_or(DecmpfsError::Truncated)?;
+            decode_inline(kind.algorithm, payload, uncompressed_size)?
+        }
+        Storage::ResourceFork => {
+            let fork = resource_fork.ok_or(DecmpfsError::MissingResourceFork)?;
+            decode_resource_fork(kind.algorithm, fork, uncompressed_size)?
+        }
+    };
+
+    if out.len() != uncompressed_size {
+        return Err(DecmpfsError::LengthMismatch {
+            expected: uncompressed_size,
+            got: out.len(),
+        });
+    }
+    Ok(out)
+}
+
+/// Decode an inline (odd-type) payload that follows the 16-byte header.
+fn decode_inline(algorithm: Algorithm, payload: &[u8], uncompressed_size: usize) -> Result<Vec<u8>> {
+    match algorithm {
+        Algorithm::Uncompressed => Ok(payload.to_vec()),
+        Algorithm::Zlib => {
+            // A leading 0xFF means the remainder is stored verbatim (the file
+            // did not compress); otherwise the payload is a zlib stream.
+            match payload.first() {
+                Some(0xFF) => Ok(payload[1..].to_vec()),
+                _ => inflate(payload),
+            }
+        }
+        Algorithm::Lzvn => lzvn_decode(payload, uncompressed_size),
+        Algorithm::Lzfse => lzfse_decode(payload),
+        // LzBitmap is rejected before dispatch; the arm keeps the match total
+        // against future `#[non_exhaustive]` Algorithm variants.
+        _ => Err(DecmpfsError::Unsupported("decmpfs unsupported algorithm")),
+    }
+}
+
+/// Decode an even-type payload stored across the resource fork.
+fn decode_resource_fork(
+    algorithm: Algorithm,
+    fork: &[u8],
+    uncompressed_size: usize,
+) -> Result<Vec<u8>> {
+    match algorithm {
+        Algorithm::Zlib => decode_zlib_resource_fork(fork, uncompressed_size),
+        Algorithm::Lzvn | Algorithm::Lzfse | Algorithm::Uncompressed => {
+            decode_chunked_resource_fork(algorithm, fork, uncompressed_size)
+        }
+        // LzBitmap is rejected before dispatch; arm keeps the match total.
+        _ => Err(DecmpfsError::Unsupported("decmpfs unsupported algorithm")),
+    }
+}
+
+/// Zlib resource fork (type 4): classic Resource-Manager header + block table.
+fn decode_zlib_resource_fork(fork: &[u8], uncompressed_size: usize) -> Result<Vec<u8>> {
+    // HFSPlusCmpfRsrcHead: big-endian headerSize, totalSize, dataSize, flags.
+    let header_size = be_u32(fork, 0)? as usize;
+    // Block table at `header_size`: big-endian dataSize, little-endian numBlocks,
+    // then numBlocks × (offset, size) little-endian. Offsets are relative to
+    // `header_size` (the start of the resource data).
+    let num_blocks = le_u32(fork, header_size.checked_add(4).ok_or(DecmpfsError::OutOfBounds)?)?
+        as usize;
+    let mut out = Vec::with_capacity(uncompressed_size);
+    for i in 0..num_blocks {
+        let entry = header_size
+            .checked_add(8)
+            .and_then(|b| b.checked_add(i.checked_mul(8)?))
+            .ok_or(DecmpfsError::OutOfBounds)?;
+        let offset = le_u32(fork, entry)? as usize;
+        let size = le_u32(fork, entry + 4)? as usize;
+        let start = header_size.checked_add(offset).ok_or(DecmpfsError::OutOfBounds)?;
+        let end = start.checked_add(size).ok_or(DecmpfsError::OutOfBounds)?;
+        let block = fork.get(start..end).ok_or(DecmpfsError::OutOfBounds)?;
+        out.extend_from_slice(&inflate(block)?);
+    }
+    Ok(out)
+}
+
+/// LZVN/LZFSE/uncompressed resource fork (types 8/12/10):
+/// `HFSPlusCmpfLZVNRsrcHead` — little-endian headerSize then chunk end-offsets.
+fn decode_chunked_resource_fork(
+    algorithm: Algorithm,
+    fork: &[u8],
+    uncompressed_size: usize,
+) -> Result<Vec<u8>> {
+    let header_size = le_u32(fork, 0)? as usize;
+    // The header holds headerSize/4 − 1 chunk end-offsets (the first u32 is the
+    // headerSize itself). Chunk data begins at `header_size`.
+    let n_chunks = (header_size / 4).checked_sub(1).ok_or(DecmpfsError::OutOfBounds)?;
+    let mut out = Vec::with_capacity(uncompressed_size);
+    let mut src = header_size;
+    for i in 0..n_chunks {
+        let end = le_u32(fork, 4 + i * 4)? as usize;
+        if end < src {
+            return Err(DecmpfsError::OutOfBounds);
+        }
+        let chunk = fork.get(src..end).ok_or(DecmpfsError::OutOfBounds)?;
+        // Each chunk decodes to CHUNK_SIZE bytes, except the last (the remainder).
+        let chunk_uncompressed = uncompressed_size
+            .checked_sub(out.len())
+            .ok_or(DecmpfsError::OutOfBounds)?
+            .min(CHUNK_SIZE);
+        let decoded = match algorithm {
+            Algorithm::Lzvn => lzvn_decode(chunk, chunk_uncompressed)?,
+            Algorithm::Lzfse => lzfse_decode(chunk)?,
+            Algorithm::Uncompressed => chunk.to_vec(),
+            // Zlib forks take the classic-header path; LzBitmap is rejected
+            // before dispatch. Either here means a routing bug, not bad input.
+            _ => return Err(DecmpfsError::Codec("unexpected algorithm for chunked fork")),
+        };
+        out.extend_from_slice(&decoded);
+        src = end;
+    }
+    Ok(out)
+}
+
+/// Inflate a zlib stream (DEFLATE with a zlib wrapper).
+fn inflate(data: &[u8]) -> Result<Vec<u8>> {
+    let mut decoder = flate2::read::ZlibDecoder::new(data);
+    let mut out = Vec::new();
+    decoder.read_to_end(&mut out).map_err(|_| DecmpfsError::Codec("zlib"))?;
+    Ok(out)
+}
+
+/// Decode a raw LZVN chunk by framing it as a single-block LZFSE stream
+/// (`bvxn` header + payload + `bvx$` end-of-stream), then decoding with the
+/// LZFSE codec — which natively handles LZVN (`bvxn`) blocks.
+fn lzvn_decode(chunk: &[u8], uncompressed_len: usize) -> Result<Vec<u8>> {
+    let n_raw = u32::try_from(uncompressed_len).map_err(|_| DecmpfsError::Codec("lzvn length"))?;
+    let n_payload = u32::try_from(chunk.len()).map_err(|_| DecmpfsError::Codec("lzvn length"))?;
+    let mut stream = Vec::with_capacity(chunk.len() + 16);
+    stream.extend_from_slice(b"bvxn"); // lzvn_compressed_block_header magic
+    stream.extend_from_slice(&n_raw.to_le_bytes());
+    stream.extend_from_slice(&n_payload.to_le_bytes());
+    stream.extend_from_slice(chunk);
+    stream.extend_from_slice(b"bvx$"); // LZFSE end-of-stream block magic
+    lzfse_decode(&stream)
+}
+
+/// Decode a complete LZFSE stream.
+fn lzfse_decode(stream: &[u8]) -> Result<Vec<u8>> {
+    let mut out = Vec::new();
+    lzfse_rust::decode_bytes(stream, &mut out).map_err(|_| DecmpfsError::Codec("lzfse/lzvn"))?;
+    Ok(out)
+}
+
+// ── bounds-checked little/big-endian readers (panic-free) ──
+
+fn le_u32(data: &[u8], offset: usize) -> Result<u32> {
+    let end = offset.checked_add(4).ok_or(DecmpfsError::OutOfBounds)?;
+    let bytes = data.get(offset..end).ok_or(DecmpfsError::OutOfBounds)?;
+    Ok(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+}
+
+fn be_u32(data: &[u8], offset: usize) -> Result<u32> {
+    let end = offset.checked_add(4).ok_or(DecmpfsError::OutOfBounds)?;
+    let bytes = data.get(offset..end).ok_or(DecmpfsError::OutOfBounds)?;
+    Ok(u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+}
+
+fn le_u64(data: &[u8], offset: usize) -> Result<u64> {
+    let end = offset.checked_add(8).ok_or(DecmpfsError::OutOfBounds)?;
+    let bytes = data.get(offset..end).ok_or(DecmpfsError::OutOfBounds)?;
+    let mut a = [0u8; 8];
+    a.copy_from_slice(bytes);
+    Ok(u64::from_le_bytes(a))
 }
 
 #[cfg(test)]
