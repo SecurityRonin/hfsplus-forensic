@@ -108,10 +108,31 @@ struct CatalogLoc {
     block_size: usize,
 }
 
+/// Volume-header byte offset of the catalogFile `HFSPlusForkData` (TN1150).
+const CATALOG_FORK_OFFSET: usize = 272;
+/// Volume-header byte offset of the attributesFile `HFSPlusForkData` (the
+/// catalogFile's successor, 80 bytes later) — home of extended attributes,
+/// including `com.apple.decmpfs`.
+const ATTRIBUTES_FORK_OFFSET: usize = 352;
+
 /// Locate the catalog B-tree from the volume header (its first extent).
 fn locate_catalog(volume: &[u8]) -> Option<CatalogLoc> {
+    locate_btree(volume, CATALOG_FORK_OFFSET)
+}
+
+/// Locate the attributes B-tree, or `None` when the volume has no attributes
+/// file (its fork holds zero blocks — i.e. no extended attributes anywhere).
+fn locate_attributes(volume: &[u8]) -> Option<CatalogLoc> {
+    locate_btree(volume, ATTRIBUTES_FORK_OFFSET)
+}
+
+/// Locate a B-tree whose first-extent `HFSPlusForkData` sits at
+/// `fork_offset_in_header` bytes into the volume header. The catalog and
+/// attributes files share the identical fork-data + B-tree-header layout.
+fn locate_btree(volume: &[u8], fork_offset_in_header: usize) -> Option<CatalogLoc> {
     let h = VOLUME_HEADER_OFFSET;
-    if volume.len() < h + 352 {
+    let fork = h.checked_add(fork_offset_in_header)?;
+    if volume.len() < fork + 20 {
         return None;
     }
     match be16(&volume[h..h + 2]) {
@@ -122,9 +143,13 @@ fn locate_catalog(volume: &[u8]) -> Option<CatalogLoc> {
     if block_size == 0 {
         return None;
     }
-    // catalogFile fork is at header offset 272; its first extent's start at +16.
-    let cat_fork = h + 272;
-    let start_block = be32(&volume[cat_fork + 16..cat_fork + 20]) as usize;
+    // HFSPlusForkData: logicalSize(8) clumpSize(4) totalBlocks(4) extents(...).
+    // A zero totalBlocks means the file does not exist (no attributes B-tree).
+    if be32(&volume[fork + 12..fork + 16]) == 0 {
+        return None;
+    }
+    // First extent's startBlock is at fork+16.
+    let start_block = be32(&volume[fork + 16..fork + 20]) as usize;
     let cat_base = start_block.checked_mul(block_size)?;
     // B-tree header record follows the 14-byte node descriptor of node 0.
     let hdr = cat_base.checked_add(14)?;
@@ -208,32 +233,38 @@ pub fn list_dir(volume: &[u8], parent_cnid: u32) -> Option<Vec<HfsEntry>> {
 ///
 /// Returns the file's bytes (concatenated from its data-fork extents, truncated
 /// to the logical size), or `None` if `cnid` is not a file in this volume.
+/// Read a file's contents by catalog node ID.
+///
+/// For a normal file this returns the data fork (concatenated extents, truncated
+/// to the logical size). For an HFS+/APFS **transparently-compressed** file —
+/// one carrying a `com.apple.decmpfs` extended attribute — the data fork is
+/// empty and the real bytes are decoded from the xattr (inline) or the resource
+/// fork ([`decmpfs`]). Returns `None` if `cnid` is not a file, or if a
+/// recognised compressed file cannot be decoded (it never returns a misleading
+/// empty or raw data fork in that case).
 #[must_use]
 pub fn read_file(volume: &[u8], cnid: u32) -> Option<Vec<u8>> {
     let loc = locate_catalog(volume)?;
-    let mut found: Option<(u64, Vec<(u32, u32)>)> = None;
+    let mut forks: Option<(Fork, Fork)> = None;
     for_each_record(volume, &loc, |rec| {
-        if found.is_none() {
-            found = file_data_fork(rec, cnid);
+        if forks.is_none() {
+            forks = file_forks(rec, cnid);
         }
     });
-    let (logical, extents) = found?;
-    let logical = logical as usize;
-    let mut data = Vec::with_capacity(logical.min(1 << 20));
-    for (start, count) in extents {
-        if data.len() >= logical {
-            break;
-        }
-        let begin = (start as usize).checked_mul(loc.block_size)?;
-        let len = (count as usize).checked_mul(loc.block_size)?;
-        let end = begin.checked_add(len)?.min(volume.len());
-        if begin >= volume.len() {
-            break;
-        }
-        data.extend_from_slice(&volume[begin..end]);
+    let (data_fork, resource_fork) = forks?;
+
+    if let Some(xattr) = decmpfs_xattr(volume, cnid) {
+        let resource = if resource_fork.logical > 0 {
+            fork_bytes(volume, loc.block_size, &resource_fork)
+        } else {
+            None
+        };
+        // Fail loud: a decmpfs file we cannot decode returns None, never the
+        // empty data fork — silent data loss is the bug this whole path fixes.
+        return decmpfs::decompress(&xattr, resource.as_deref()).ok();
     }
-    data.truncate(logical);
-    Some(data)
+
+    fork_bytes(volume, loc.block_size, &data_fork)
 }
 
 /// Parse a catalog record into `(parentID, entry)` for file/folder records.
@@ -263,15 +294,27 @@ fn record_entry(rec: &[u8]) -> Option<(u32, HfsEntry)> {
     Some((parent_id, HfsEntry { name, is_dir, cnid }))
 }
 
-/// If `rec` is the file record for `cnid`, return its data fork as
-/// `(logical_size, extents)`.
-fn file_data_fork(rec: &[u8], cnid: u32) -> Option<(u64, Vec<(u32, u32)>)> {
+/// A file fork: logical size plus its (start_block, block_count) extents.
+struct Fork {
+    logical: u64,
+    extents: Vec<(u32, u32)>,
+}
+
+/// `com.apple.decmpfs` extended-attribute name.
+const DECMPFS_XATTR_NAME: &str = "com.apple.decmpfs";
+/// `kHFSPlusAttrInlineData` — the attribute record type whose value is stored
+/// inline (the only form the small decmpfs header ever uses).
+const ATTR_INLINE_DATA: u32 = 0x10;
+
+/// If `rec` is the file record for `cnid`, return its `(data_fork,
+/// resource_fork)`. The file record holds the data fork's `HFSPlusForkData` at
+/// +88 and the resource fork's at +168 (TN1150).
+fn file_forks(rec: &[u8], cnid: u32) -> Option<(Fork, Fork)> {
     if rec.len() < 8 {
         return None;
     }
     let key_len = be16(&rec[0..2]) as usize;
     let data = 2 + key_len;
-    // File record + data fork (HFSPlusForkData at +88, 80 bytes).
     if data + 168 > rec.len() {
         return None;
     }
@@ -281,18 +324,102 @@ fn file_data_fork(rec: &[u8], cnid: u32) -> Option<(u64, Vec<(u32, u32)>)> {
     if be32(&rec[data + 8..data + 12]) != cnid {
         return None;
     }
-    let fork = data + 88;
-    let logical = u64::from_be_bytes(rec[fork..fork + 8].try_into().ok()?);
+    let data_fork = parse_fork(&rec[data + 88..])?;
+    // The resource fork follows the 80-byte data fork. A record truncated before
+    // it means no resource fork (an empty one is harmless for non-compressed files).
+    let resource_fork = if data + 248 <= rec.len() {
+        parse_fork(&rec[data + 168..])?
+    } else {
+        Fork { logical: 0, extents: Vec::new() }
+    };
+    Some((data_fork, resource_fork))
+}
+
+/// Parse an 80-byte `HFSPlusForkData`: logical size + up to 8 extents.
+fn parse_fork(fork: &[u8]) -> Option<Fork> {
+    if fork.len() < 80 {
+        return None;
+    }
+    let logical = u64::from_be_bytes(fork[0..8].try_into().ok()?);
     let mut extents = Vec::new();
     for i in 0..8 {
-        let e = fork + 16 + i * 8;
-        let start = be32(&rec[e..e + 4]);
-        let count = be32(&rec[e + 4..e + 8]);
+        let e = 16 + i * 8;
+        let start = be32(&fork[e..e + 4]);
+        let count = be32(&fork[e + 4..e + 8]);
         if count != 0 {
             extents.push((start, count));
         }
     }
-    Some((logical, extents))
+    Some(Fork { logical, extents })
+}
+
+/// Materialize a fork's bytes from `volume`, truncated to its logical size.
+fn fork_bytes(volume: &[u8], block_size: usize, fork: &Fork) -> Option<Vec<u8>> {
+    let logical = fork.logical as usize;
+    let mut data = Vec::with_capacity(logical.min(1 << 20));
+    for &(start, count) in &fork.extents {
+        if data.len() >= logical {
+            break;
+        }
+        let begin = (start as usize).checked_mul(block_size)?;
+        let len = (count as usize).checked_mul(block_size)?;
+        let end = begin.checked_add(len)?.min(volume.len());
+        if begin >= volume.len() {
+            break;
+        }
+        data.extend_from_slice(&volume[begin..end]);
+    }
+    data.truncate(logical);
+    Some(data)
+}
+
+/// Look up the `com.apple.decmpfs` extended attribute for `cnid` by walking the
+/// attributes B-tree. Returns `None` if the volume has no attributes file or the
+/// file carries no such attribute (i.e. it is not transparently compressed).
+fn decmpfs_xattr(volume: &[u8], cnid: u32) -> Option<Vec<u8>> {
+    let loc = locate_attributes(volume)?;
+    let mut found = None;
+    for_each_record(volume, &loc, |rec| {
+        if found.is_none() {
+            found = attr_inline_value(rec, cnid, DECMPFS_XATTR_NAME);
+        }
+    });
+    found
+}
+
+/// If `rec` is the inline-data attribute record for `(cnid, want_name)`, return
+/// its value. `HFSPlusAttrKey`: keyLength(2) pad(2) fileID@4 startBlock@8
+/// attrNameLen@12 attrName@14 (UTF-16 BE). `HFSPlusAttrData`: recordType@key_end
+/// reserved[2] attrSize@+12 attrData@+16.
+fn attr_inline_value(rec: &[u8], cnid: u32, want_name: &str) -> Option<Vec<u8>> {
+    if rec.len() < 14 {
+        return None;
+    }
+    let key_len = be16(&rec[0..2]) as usize;
+    if be32(&rec[4..8]) != cnid {
+        return None;
+    }
+    let name_len = be16(&rec[12..14]) as usize;
+    let name_end = 14usize.checked_add(name_len.checked_mul(2)?)?;
+    if name_end > rec.len() {
+        return None;
+    }
+    if decode_utf16(&rec[14..name_end]) != want_name {
+        return None;
+    }
+    let body = 2 + key_len;
+    if body + 16 > rec.len() {
+        return None;
+    }
+    if be32(&rec[body..body + 4]) != ATTR_INLINE_DATA {
+        return None;
+    }
+    let attr_size = be32(&rec[body + 12..body + 16]) as usize;
+    let end = body.checked_add(16)?.checked_add(attr_size)?;
+    if end > rec.len() {
+        return None;
+    }
+    Some(rec[body + 16..end].to_vec())
 }
 
 /// Decode a big-endian UTF-16 byte slice to a `String` (lossy).
