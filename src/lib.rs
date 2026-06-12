@@ -8,8 +8,10 @@
 //!
 //! This crate reads the volume header (geometry), walks the catalog B-tree to
 //! list directories ([`list_root`], [`list_dir`], recursive [`walk`]), and
-//! extracts file data forks ([`read_file`]).  Journal replay and resource forks
-//! are out of scope.  Validated against real `hdiutil`-created HFS+ volumes.
+//! extracts file contents ([`read_file`]) — including HFS+/APFS transparently
+//! *compressed* files, which it decodes via the [`decmpfs`] module (zlib / LZVN
+//! / LZFSE, inline xattr or resource fork). Journal replay is out of scope.
+//! Validated against real `hdiutil`/`ditto`-created HFS+ volumes.
 
 pub mod decmpfs;
 
