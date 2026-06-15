@@ -1,5 +1,28 @@
 # Terms of Service
 
-`hfsplus-forensic` is provided under the MIT License, "as is", without warranty of any kind. See the [LICENSE](../LICENSE) for the full terms.
+*Last updated: 2026-06-15*
 
-© 2026 Security Ronin Ltd
+## Licence
+
+hfsplus-forensic is released under the [MIT License](https://github.com/SecurityRonin/hfsplus-forensic/blob/main/LICENSE). You may use, modify, and distribute it subject to the terms of that licence.
+
+## Acceptable Use
+
+You agree to use hfsplus-forensic only for lawful purposes, including but not limited to:
+
+- Digital forensics investigations on systems you own or are authorised to examine
+- Incident response activities within your organisation
+- Security research and CTF competitions
+- Academic or educational use
+
+## No Warranty
+
+hfsplus-forensic is provided "as is" without warranty of any kind. Security Ronin Ltd is not liable for any damages arising from use of this software.
+
+## Contact
+
+[security@securityronin.com](mailto:security@securityronin.com)
+
+---
+
+[Privacy Policy](privacy.md) · [Home](index.md) · © 2026 Security Ronin Ltd.
