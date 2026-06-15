@@ -1,6 +1,6 @@
 [![Crates.io](https://img.shields.io/crates/v/hfsplus-forensic.svg)](https://crates.io/crates/hfsplus-forensic)
 [![docs.rs](https://img.shields.io/docsrs/hfsplus-forensic)](https://docs.rs/hfsplus-forensic)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![License: Apache-2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![CI](https://github.com/SecurityRonin/hfsplus-forensic/actions/workflows/ci.yml/badge.svg)](https://github.com/SecurityRonin/hfsplus-forensic/actions)
 [![Sponsor](https://img.shields.io/badge/sponsor-h4x0r-ea4aaa?logo=github-sponsors)](https://github.com/sponsors/h4x0r)
 
