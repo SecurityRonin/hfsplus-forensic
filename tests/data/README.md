@@ -75,3 +75,28 @@ synthetic fixtures had passed — zlib block offsets are relative to
   payload did not compress, so the remainder is verbatim) over 3000 bytes of dict
   words. Apple's real compressor never emits this, so it is built by hand.
 - **Generator:** `b'\xff' + words[:3000]`.
+
+#### tahoe_type8.rsrc + tahoe_type8.expected — `REAL-self` (macOS 26.5 Tahoe)
+
+- **Identity:** a real decmpfs **type-8 (LZVN, resource fork)** block from
+  `/usr/bin/loads.d` on macOS 26.5 (build 25F71). The resource fork is 1188 B and
+  carries trailing bytes **after** the LZVN end-of-stream opcode (the case strict
+  decoders reject); `.expected` is the 1936-B decompressed content.
+- **Source:** mounted a `macos-tahoe-vanilla:26.5` VM disk read-only on the host
+  (`hdiutil attach -readonly`; `diskutil mount readOnly /dev/diskNs1`).
+- **Generator (capture):** `getxattr(path, "com.apple.ResourceFork",
+  XATTR_SHOWCOMPRESSION=0x20)` for the fork; `.expected` = Apple
+  `compression_decode_buffer(COMPRESSION_LZVN=0x900)` on the block (oracle), which
+  equals the kernel's transparent read.
+
+#### tahoe_type9.decmpfs + tahoe_type9.expected — `REAL-self` (macOS 26.5 Tahoe)
+
+- **Identity:** a real decmpfs **type-9 (uncompressed, inline)** xattr from a
+  `/usr/bin/pp` perl-wrapper script on macOS 26.5. The 80-B xattr is the 16-B
+  decmpfs header + a 1-byte `0xCC` storage marker + 63 B of verbatim content;
+  `.expected` is the 63-B content (marker stripped).
+- **Generator (capture):** `getxattr(path, "com.apple.decmpfs",
+  XATTR_SHOWCOMPRESSION=0x20)` (the full xattr is committed verbatim).
+- **Note:** these two fixtures exposed two decoder bugs that synthetic `ditto`
+  fixtures masked (type-8 strict-trailing reject, fixed via the `lzvn` crate;
+  type-9 unstripped marker). 35/35 real Tahoe samples now decode (was 0/35).
