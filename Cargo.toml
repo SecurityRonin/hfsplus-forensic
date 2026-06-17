@@ -17,7 +17,13 @@ categories = ["parser-implementations", "filesystem"]
 #   zlib/DEFLATE (types 3/4) and LZVN/LZFSE (types 7/8/11/12).
 # Both are pure-Rust, keeping `unsafe_code = "forbid"` intact.
 flate2 = "1"
+# LZFSE (types 11/12). LZVN (types 7/8) goes through our `lzvn` crate instead:
+# its decode is length-tolerant, which lzfse_rust's strict stream path is not —
+# real macOS decmpfs LZVN blocks carry trailing bytes after end-of-stream.
 lzfse_rust = "0.2"
+# Path dep during the coordinated decmpfs change; switch to the registry version
+# (`lzvn = { version = "0.1", package = "lzvn-core" }`) once lzvn-core publishes.
+lzvn = { package = "lzvn-core", path = "../lzvn" }
 # decmpfs format knowledge (magic, type→algorithm/storage map, chunk size).
 # Path dep during the coordinated decmpfs change; switch to the registry version
 # once forensicnomicon 0.4.3 (the decmpfs module) is published.

@@ -65,7 +65,10 @@ impl std::fmt::Display for DecmpfsError {
             Self::UnknownType(t) => write!(f, "decmpfs unknown compression_type {t}"),
             Self::Unsupported(s) => write!(f, "decmpfs unsupported: {s}"),
             Self::MissingResourceFork => {
-                write!(f, "decmpfs resource-fork type but no resource fork supplied")
+                write!(
+                    f,
+                    "decmpfs resource-fork type but no resource fork supplied"
+                )
             }
             Self::OutOfBounds => write!(f, "decmpfs length/offset field out of bounds"),
             Self::Codec(s) => write!(f, "decmpfs codec error: {s}"),
@@ -110,13 +113,15 @@ pub fn decompress(xattr: &[u8], resource_fork: Option<&[u8]>) -> Result<Vec<u8>>
         });
     };
     if kind.algorithm == Algorithm::LzBitmap {
-        return Err(DecmpfsError::Unsupported("decmpfs LZBitmap (no public spec)"));
+        return Err(DecmpfsError::Unsupported(
+            "decmpfs LZBitmap (no public spec)",
+        ));
     }
 
     let out = match kind.storage {
         Storage::Inline => {
             let payload = xattr.get(HEADER_LEN..).ok_or(DecmpfsError::Truncated)?;
-            decode_inline(kind.algorithm, payload, uncompressed_size)?
+            decode_inline(kind.algorithm, payload, uncompressed_size, compression_type)?
         }
         Storage::ResourceFork => {
             let fork = resource_fork.ok_or(DecmpfsError::MissingResourceFork)?;
@@ -134,9 +139,27 @@ pub fn decompress(xattr: &[u8], resource_fork: Option<&[u8]>) -> Result<Vec<u8>>
 }
 
 /// Decode an inline (odd-type) payload that follows the 16-byte header.
-fn decode_inline(algorithm: Algorithm, payload: &[u8], uncompressed_size: usize) -> Result<Vec<u8>> {
+///
+/// `compression_type` is threaded in because two inline-uncompressed types
+/// share one [`Algorithm::Uncompressed`] but differ in framing: type 1 stores
+/// its bytes verbatim, while type 9 is a *marker-prefixed* variant (one leading
+/// byte before the raw data). That is a documented discontinuity in the decmpfs
+/// format — verified against go-apfs `decmpfs.go` (strips `AttrBytes[1:]` for
+/// `CMP_ATTR_UNCOMPRESSED`/type 9) and forensicnomicon's type table — not a
+/// special case. Confirmed on real macOS 26.5 type-9 files (the marker byte,
+/// 0xCC in those samples, precedes the verbatim content).
+fn decode_inline(
+    algorithm: Algorithm,
+    payload: &[u8],
+    uncompressed_size: usize,
+    compression_type: u32,
+) -> Result<Vec<u8>> {
     match algorithm {
-        Algorithm::Uncompressed => Ok(payload.to_vec()),
+        // Type 1: verbatim. Type 9: strip the one-byte storage marker.
+        Algorithm::Uncompressed => match compression_type {
+            9 => Ok(payload.get(1..).unwrap_or(&[]).to_vec()),
+            _ => Ok(payload.to_vec()),
+        },
         Algorithm::Zlib => {
             // A leading 0xFF means the remainder is stored verbatim (the file
             // did not compress); otherwise the payload is a zlib stream.
@@ -145,7 +168,12 @@ fn decode_inline(algorithm: Algorithm, payload: &[u8], uncompressed_size: usize)
                 _ => inflate(payload),
             }
         }
-        Algorithm::Lzvn => lzvn_decode(payload, uncompressed_size),
+        // A leading 0x06 (the LZVN end-of-stream opcode) marks an inline payload
+        // stored uncompressed after that marker (go-apfs `CMP_ATTR_LZVN`).
+        Algorithm::Lzvn => match payload.first() {
+            Some(0x06) => Ok(payload.get(1..).unwrap_or(&[]).to_vec()),
+            _ => lzvn_decode(payload, uncompressed_size),
+        },
         Algorithm::Lzfse => lzfse_decode(payload),
         // LzBitmap is rejected before dispatch; the arm keeps the match total
         // against future `#[non_exhaustive]` Algorithm variants.
@@ -179,7 +207,9 @@ fn decode_zlib_resource_fork(fork: &[u8], uncompressed_size: usize) -> Result<Ve
     // of the block table, i.e. the numBlocks field), NOT to `header_size`.
     // (Verified against real afsctool/macOS forks — a synthetic round-trip can
     // pass with the wrong base because it is self-consistent.)
-    let table = header_size.checked_add(4).ok_or(DecmpfsError::OutOfBounds)?;
+    let table = header_size
+        .checked_add(4)
+        .ok_or(DecmpfsError::OutOfBounds)?;
     let num_blocks = le_u32(fork, table)? as usize;
     let mut out = Vec::with_capacity(uncompressed_size);
     for i in 0..num_blocks {
@@ -212,7 +242,9 @@ fn decode_chunked_resource_fork(
     // in afsctool LZFSE forks). The true count is ceil(uncompressed_size /
     // CHUNK_SIZE); the loop stops once it has produced that many bytes, never
     // reading a zero-padding slot.
-    let n_slots = (header_size / 4).checked_sub(1).ok_or(DecmpfsError::OutOfBounds)?;
+    let n_slots = (header_size / 4)
+        .checked_sub(1)
+        .ok_or(DecmpfsError::OutOfBounds)?;
     let mut out = Vec::with_capacity(uncompressed_size);
     let mut src = header_size;
     for i in 0..n_slots {
@@ -247,23 +279,22 @@ fn decode_chunked_resource_fork(
 fn inflate(data: &[u8]) -> Result<Vec<u8>> {
     let mut decoder = flate2::read::ZlibDecoder::new(data);
     let mut out = Vec::new();
-    decoder.read_to_end(&mut out).map_err(|_| DecmpfsError::Codec("zlib"))?;
+    decoder
+        .read_to_end(&mut out)
+        .map_err(|_| DecmpfsError::Codec("zlib"))?;
     Ok(out)
 }
 
-/// Decode a raw LZVN chunk by framing it as a single-block LZFSE stream
-/// (`bvxn` header + payload + `bvx$` end-of-stream), then decoding with the
-/// LZFSE codec — which natively handles LZVN (`bvxn`) blocks.
+/// Decode a raw LZVN chunk with the length-tolerant `lzvn` codec.
+///
+/// A real macOS `decmpfs` resource-fork block ends with the LZVN end-of-stream
+/// opcode and is then followed by 80–300 trailing bytes that the kernel ignores.
+/// The previous bvxn+LZFSE-stream framing declared those trailing bytes as
+/// payload, so a strict whole-stream decoder (lzfse_rust) rejected every real
+/// Tahoe type-8 file. [`lzvn::decode`] stops at the end-of-stream opcode, so it
+/// reads the genuine blocks. (Validated 25/25 on macOS 26.5 vs 0/25 before.)
 fn lzvn_decode(chunk: &[u8], uncompressed_len: usize) -> Result<Vec<u8>> {
-    let n_raw = u32::try_from(uncompressed_len).map_err(|_| DecmpfsError::Codec("lzvn length"))?;
-    let n_payload = u32::try_from(chunk.len()).map_err(|_| DecmpfsError::Codec("lzvn length"))?;
-    let mut stream = Vec::with_capacity(chunk.len() + 16);
-    stream.extend_from_slice(b"bvxn"); // lzvn_compressed_block_header magic
-    stream.extend_from_slice(&n_raw.to_le_bytes());
-    stream.extend_from_slice(&n_payload.to_le_bytes());
-    stream.extend_from_slice(chunk);
-    stream.extend_from_slice(b"bvx$"); // LZFSE end-of-stream block magic
-    lzfse_decode(&stream)
+    lzvn::decode(chunk, uncompressed_len).map_err(|_| DecmpfsError::Codec("lzvn"))
 }
 
 /// Decode a complete LZFSE stream.
@@ -419,9 +450,36 @@ mod tests {
     // ── inline uncompressed variant (type 9) ──
     #[test]
     fn decodes_inline_uncompressed_type9() {
-        let data = b"type 9 is uncompressed-inline, a variant of type 1";
-        let x = xattr(9, data.len() as u64, data);
-        assert_eq!(decompress(&x, None).expect("type-9 must decode"), data);
+        // Type 9 is a *marker-prefixed* variant of type 1: one storage-marker
+        // byte precedes the verbatim content, and uncompressed_size counts the
+        // content only. (Confirmed on real macOS 26.5 files; see the
+        // `tahoe_type9` fixture below. The earlier verbatim-only form was a
+        // synthetic-fixture bug that real data exposed.)
+        let content = b"type 9 is uncompressed-inline, a variant of type 1";
+        let mut payload = vec![0xCC];
+        payload.extend_from_slice(content);
+        let x = xattr(9, content.len() as u64, &payload);
+        assert_eq!(decompress(&x, None).expect("type-9 must decode"), content);
+    }
+
+    // ── REAL macOS 26.5 (Tahoe) type-8 LZVN resource fork WITH trailing bytes
+    //    after the end-of-stream opcode — the case strict decoders reject. ──
+    #[test]
+    fn decodes_real_tahoe_type8_lzvn_with_trailing_bytes() {
+        let fork = include_bytes!("../tests/data/decmpfs/tahoe_type8.rsrc");
+        let expected = include_bytes!("../tests/data/decmpfs/tahoe_type8.expected");
+        let hdr = header(8, expected.len() as u64);
+        let out = decompress(&hdr, Some(fork)).expect("Tahoe LZVN must decode");
+        assert_eq!(out.as_slice(), expected.as_slice());
+    }
+
+    // ── REAL macOS 26.5 (Tahoe) type-9 inline xattr with its 1-byte marker. ──
+    #[test]
+    fn decodes_real_tahoe_type9_inline_marker() {
+        let xattr_bytes = include_bytes!("../tests/data/decmpfs/tahoe_type9.decmpfs");
+        let expected = include_bytes!("../tests/data/decmpfs/tahoe_type9.expected");
+        let out = decompress(xattr_bytes, None).expect("Tahoe type-9 must decode");
+        assert_eq!(out.as_slice(), expected.as_slice());
     }
 
     // ── a wrong uncompressed_size must fail loud, not return a short buffer ──
@@ -440,7 +498,10 @@ mod tests {
     fn rejects_bad_magic() {
         let mut x = xattr(1, 0, &[]);
         x[0] ^= 0xFF;
-        assert!(matches!(decompress(&x, None), Err(DecmpfsError::BadMagic(_))));
+        assert!(matches!(
+            decompress(&x, None),
+            Err(DecmpfsError::BadMagic(_))
+        ));
     }
 
     #[test]
@@ -457,18 +518,27 @@ mod tests {
     #[test]
     fn rejects_lzbitmap_unsupported() {
         let x = xattr(14, 0, &[]);
-        assert!(matches!(decompress(&x, None), Err(DecmpfsError::Unsupported(_))));
+        assert!(matches!(
+            decompress(&x, None),
+            Err(DecmpfsError::Unsupported(_))
+        ));
     }
 
     #[test]
     fn rejects_dedup_type5_unsupported() {
         let x = xattr(5, 0, &[]);
-        assert!(matches!(decompress(&x, None), Err(DecmpfsError::Unsupported(_))));
+        assert!(matches!(
+            decompress(&x, None),
+            Err(DecmpfsError::Unsupported(_))
+        ));
     }
 
     #[test]
     fn resource_fork_type_without_fork_errors() {
         let hdr = header(8, 100);
-        assert_eq!(decompress(&hdr, None), Err(DecmpfsError::MissingResourceFork));
+        assert_eq!(
+            decompress(&hdr, None),
+            Err(DecmpfsError::MissingResourceFork)
+        );
     }
 }
