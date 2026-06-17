@@ -21,9 +21,9 @@ flate2 = "1"
 # its decode is length-tolerant, which lzfse_rust's strict stream path is not —
 # real macOS decmpfs LZVN blocks carry trailing bytes after end-of-stream.
 lzfse_rust = "0.2"
-# Path dep during the coordinated decmpfs change; switch to the registry version
-# (`lzvn = { version = "0.1", package = "lzvn-core" }`) once lzvn-core publishes.
-lzvn = { package = "lzvn-core", path = "../lzvn" }
+# Length-tolerant Apple LZVN decoder (reads real decmpfs blocks with trailing
+# bytes after end-of-stream, which lzfse_rust rejects). Pure-Rust, no_std.
+lzvn = { version = "0.1", package = "lzvn-core" }
 # decmpfs format knowledge (magic, type→algorithm/storage map, chunk size).
 # Path dep during the coordinated decmpfs change; switch to the registry version
 # once forensicnomicon 0.4.3 (the decmpfs module) is published.

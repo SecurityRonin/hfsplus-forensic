@@ -56,6 +56,8 @@ checksum = "5edeac3ec657925dececc672bdd58fa2212291886ddcb3e08aa46924c78340c6"
 [[package]]
 name = "lzvn-core"
 version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "48db7a2992202475d35c358a6a11a14c0a8ffb2d97ea2adae5766482243db356"
 
 [[package]]
 name = "miniz_oxide"
