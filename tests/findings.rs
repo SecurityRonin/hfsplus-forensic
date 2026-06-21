@@ -243,10 +243,383 @@ fn anomalies_are_graded_and_consistent_with() {
     // Observations are "consistent with", never verdicts.
     assert!(!a.note.to_lowercase().contains("proves"));
     assert!(!a.note.to_lowercase().contains("confirms"));
-    let _ = ATTRIBUTES_FORK_OFFSET; // referenced for documentation parity
     let _ = AnomalyKind::BtreeNodeInvalid {
         tree: String::new(),
         node: 0,
         detail: String::new(),
     };
+}
+
+/// Locate the absolute byte offset of the first file record (recordType==2) in
+/// the catalog's first leaf node, returning `(record_offset, data_offset)` where
+/// `data_offset` points at the record body (past the variable key).
+fn first_file_record(vol: &[u8]) -> (usize, usize) {
+    let (cat_base, node_size, first_leaf) = locate(vol, CATALOG_FORK_OFFSET);
+    let node_off = first_leaf as usize * node_size + cat_base;
+    let nd = &vol[node_off..node_off + node_size];
+    let num = be16(nd, 10) as usize;
+    for i in 0..num {
+        let slot = node_size - 2 * (i + 1);
+        let rec = be16(nd, slot) as usize;
+        let key_len = be16(nd, rec) as usize;
+        let data = rec + 2 + key_len;
+        if i16::from_be_bytes([nd[data], nd[data + 1]]) == 2 {
+            return (node_off + rec, node_off + data);
+        }
+    }
+    panic!("no file record in first leaf");
+}
+
+/// A file whose data-fork extents cover fewer blocks than its logical size needs
+/// (with no overflow record) trips the catalog/extents mismatch.
+#[test]
+fn catalog_extents_mismatch_is_flagged() {
+    let mut vol = volume();
+    let (_rec, data) = first_file_record(&vol);
+    // Data fork @ data+88: logicalSize(8) @+0, totalBlocks @+12, extents @+16.
+    // Inflate the logical size to 10 blocks' worth while the single extent
+    // covers one block → allocated < needed.
+    let logical_off = data + 88;
+    vol[logical_off..logical_off + 8].copy_from_slice(&(10u64 * 4096).to_be_bytes());
+
+    let anomalies = audit(&vol);
+    assert!(
+        anomalies
+            .iter()
+            .any(|a| a.code == "HFS-CATALOG-EXTENTS-MISMATCH"),
+        "expected HFS-CATALOG-EXTENTS-MISMATCH, got: {anomalies:?}"
+    );
+}
+
+/// A file record whose recordType is corrupted to a thread type leaves the
+/// file's own thread record pointing at a now-absent CNID.
+#[test]
+fn deleted_but_referenced_is_flagged() {
+    let mut vol = volume();
+    let (rec, data) = first_file_record(&vol);
+    let _ = rec;
+    // Flip the file record's recordType (2) to an unrecognized value so the
+    // entry vanishes from the catalog while its thread (which lives in a
+    // separate record) still references the CNID.
+    vol[data] = 0x00;
+    vol[data + 1] = 0x7F;
+
+    let anomalies = audit(&vol);
+    assert!(
+        anomalies
+            .iter()
+            .any(|a| a.code == "HFS-DELETED-BUT-REFERENCED"),
+        "expected HFS-DELETED-BUT-REFERENCED, got: {anomalies:?}"
+    );
+}
+
+/// A leaf node whose descriptor height is corrupted to 0 (a leaf must sit at
+/// height >= 1) is flagged.
+#[test]
+fn leaf_height_anomaly_is_flagged() {
+    let mut vol = volume();
+    let (cat_base, node_size, first_leaf) = locate(&vol, CATALOG_FORK_OFFSET);
+    let leaf_off = first_leaf as usize * node_size + cat_base;
+    // height at offset 9; the real value is 1, zero it.
+    assert_eq!(vol[leaf_off + 9], 1, "fixture leaf height should be 1");
+    vol[leaf_off + 9] = 0;
+
+    let anomalies = audit(&vol);
+    assert!(
+        anomalies
+            .iter()
+            .any(|a| a.code == "HFS-BTREE-NODE-INVALID" && a.note.contains("must sit at height")),
+        "expected leaf-height HFS-BTREE-NODE-INVALID, got: {anomalies:?}"
+    );
+}
+
+/// decmpfs xattr whose compression_type is undocumented is flagged (the reader
+/// would refuse to materialize the file).
+#[test]
+fn decmpfs_unknown_type_is_flagged() {
+    let mut vol = decmpfs_volume();
+    // comp.bin's decmpfs compression_type field (LE u32) lives in the
+    // attributes B-tree; locate it the same way audit's decmpfs_xattr does.
+    let (cat_base, node_size, first_leaf) = locate(&vol, ATTRIBUTES_FORK_OFFSET);
+    let off = patch_decmpfs_type(&mut vol, cat_base, node_size, first_leaf, 99);
+    assert!(off, "no com.apple.decmpfs attribute found to patch");
+
+    let anomalies = audit(&vol);
+    assert!(
+        anomalies
+            .iter()
+            .any(|a| a.code == "HFS-DECMPFS-MISSING-RESOURCE"
+                && a.note.contains("not a documented decmpfs type")),
+        "expected unknown-type HFS-DECMPFS-MISSING-RESOURCE, got: {anomalies:?}"
+    );
+}
+
+/// decmpfs xattr re-typed to an inline storage type while holding only the
+/// 16-byte header (no inline payload) is flagged.
+#[test]
+fn decmpfs_inline_without_payload_is_flagged() {
+    let mut vol = decmpfs_volume();
+    let (cat_base, node_size, first_leaf) = locate(&vol, ATTRIBUTES_FORK_OFFSET);
+    // Type 3 = zlib inline; comp.bin's xattr is exactly the 16-byte header, so
+    // an inline type with no trailing payload is unrecoverable.
+    let ok = patch_decmpfs_type(&mut vol, cat_base, node_size, first_leaf, 3);
+    assert!(ok, "no com.apple.decmpfs attribute found to patch");
+
+    let anomalies = audit(&vol);
+    assert!(
+        anomalies.iter().any(|a| a.code == "HFS-DECMPFS-MISSING-RESOURCE"
+            && a.note.contains("only the header")),
+        "expected inline-no-payload HFS-DECMPFS-MISSING-RESOURCE, got: {anomalies:?}"
+    );
+}
+
+/// A file timestamp before the HFS+ epoch (a non-zero value below the
+/// epoch-to-Unix boundary) is impossible and flagged.
+#[test]
+fn timestamp_before_epoch_is_flagged() {
+    let mut vol = volume();
+    let (_rec, data) = first_file_record(&vol);
+    // createDate@+16, contentModDate@+20: set create to a small non-zero value
+    // (well below the epoch boundary) and keep it <= modify so the create>modify
+    // arm does not pre-empt the pre-epoch check.
+    let create_off = data + 16;
+    let mod_off = data + 20;
+    vol[create_off..create_off + 4].copy_from_slice(&100u32.to_be_bytes());
+    vol[mod_off..mod_off + 4].copy_from_slice(&200u32.to_be_bytes());
+
+    let anomalies = audit(&vol);
+    assert!(
+        anomalies
+            .iter()
+            .any(|a| a.code == "HFS-TIME-ANOMALY" && a.note.contains("predates the HFS+ epoch")),
+        "expected pre-epoch HFS-TIME-ANOMALY, got: {anomalies:?}"
+    );
+}
+
+/// A file timestamp after the volume's own last-written date is impossible
+/// (nothing inside a volume can postdate its header) and flagged.
+#[test]
+fn timestamp_after_volume_is_flagged() {
+    let mut vol = volume();
+    // Volume modifyDate @ header+20. Set a file's create/mod far past it.
+    let (_rec, data) = first_file_record(&vol);
+    let vol_mod = be32(&vol, VOLUME_HEADER_OFFSET + 20);
+    let future = vol_mod.saturating_add(10_000_000);
+    let create_off = data + 16;
+    let mod_off = data + 20;
+    vol[create_off..create_off + 4].copy_from_slice(&future.to_be_bytes());
+    vol[mod_off..mod_off + 4].copy_from_slice(&future.to_be_bytes());
+
+    let anomalies = audit(&vol);
+    assert!(
+        anomalies
+            .iter()
+            .any(|a| a.code == "HFS-TIME-ANOMALY"
+                && a.note.contains("after the volume's last-written")),
+        "expected after-volume HFS-TIME-ANOMALY, got: {anomalies:?}"
+    );
+}
+
+/// A header-kind node descriptor on a node other than node 0 is flagged.
+#[test]
+fn header_kind_on_nonzero_node_is_flagged() {
+    let mut vol = volume();
+    let (cat_base, node_size, first_leaf) = locate(&vol, CATALOG_FORK_OFFSET);
+    let leaf_off = first_leaf as usize * node_size + cat_base;
+    // Stamp the leaf node's descriptor kind to header (1) — illegal off node 0.
+    vol[leaf_off + 8] = 1;
+
+    let anomalies = audit(&vol);
+    assert!(
+        anomalies
+            .iter()
+            .any(|a| a.code == "HFS-BTREE-NODE-INVALID"
+                && a.note.contains("header node must be node 0")),
+        "expected header-on-nonzero HFS-BTREE-NODE-INVALID, got: {anomalies:?}"
+    );
+}
+
+/// A decmpfs xattr truncated below the 16-byte decmpfs header is flagged. We
+/// shrink comp.bin's attribute `attrSize` to 8 so the returned xattr is short.
+#[test]
+fn decmpfs_truncated_header_is_flagged() {
+    let mut vol = decmpfs_volume();
+    let (cat_base, node_size, first_leaf) = locate(&vol, ATTRIBUTES_FORK_OFFSET);
+    let ok = shrink_decmpfs_attr_size(&mut vol, cat_base, node_size, first_leaf, 8);
+    assert!(ok, "no com.apple.decmpfs attribute found to shrink");
+
+    let anomalies = audit(&vol);
+    assert!(
+        anomalies
+            .iter()
+            .any(|a| a.code == "HFS-DECMPFS-MISSING-RESOURCE"
+                && a.note.contains("shorter than the 16-byte decmpfs header")),
+        "expected truncated-header HFS-DECMPFS-MISSING-RESOURCE, got: {anomalies:?}"
+    );
+}
+
+/// A resource-fork decmpfs file whose resource fork is entirely zeroed (logical
+/// size AND extents) trips the "resource fork is empty" arm.
+#[test]
+fn decmpfs_empty_resource_logical_is_flagged() {
+    let mut vol = decmpfs_volume();
+    let (cat_base, node_size, first_leaf) = locate(&vol, CATALOG_FORK_OFFSET);
+    let mut node = first_leaf;
+    let mut patched = false;
+    while node != 0 && !patched {
+        let node_off = node as usize * node_size + cat_base;
+        if node_off + node_size > vol.len() {
+            break;
+        }
+        let nd = &vol[node_off..node_off + node_size];
+        let f_link = be32(nd, 0);
+        let num = be16(nd, 10) as usize;
+        for i in 0..num {
+            let slot = node_size - 2 * (i + 1);
+            let rec = be16(nd, slot) as usize;
+            let r = &nd[rec..];
+            if r.len() < 8 {
+                continue;
+            }
+            let key_len = be16(r, 0) as usize;
+            let data = 2 + key_len;
+            if data + 248 > r.len() {
+                continue;
+            }
+            if i16::from_be_bytes([r[data], r[data + 1]]) == 2 {
+                let rsrc_logical =
+                    u64::from_be_bytes(r[data + 168..data + 176].try_into().unwrap());
+                if rsrc_logical > 0 {
+                    // Zero the resource fork's entire HFSPlusForkData (80 bytes):
+                    // logicalSize + clump + totalBlocks + all 8 extents.
+                    let base = node_off + rec + data + 168;
+                    for b in vol[base..base + 80].iter_mut() {
+                        *b = 0;
+                    }
+                    patched = true;
+                    break;
+                }
+            }
+        }
+        node = f_link;
+    }
+    assert!(patched, "no compressed file with a resource fork found");
+
+    let anomalies = audit(&vol);
+    assert!(
+        anomalies
+            .iter()
+            .any(|a| a.code == "HFS-DECMPFS-MISSING-RESOURCE"
+                && a.note.contains("resource fork is empty")),
+        "expected empty-resource HFS-DECMPFS-MISSING-RESOURCE, got: {anomalies:?}"
+    );
+}
+
+/// Set the `attrSize` (BE u32 @ body+12) of the first `com.apple.decmpfs`
+/// inline-data attribute, truncating the value the reader returns.
+fn shrink_decmpfs_attr_size(
+    vol: &mut [u8],
+    cat_base: usize,
+    node_size: usize,
+    first_leaf: u32,
+    new_size: u32,
+) -> bool {
+    let mut node = first_leaf;
+    while node != 0 {
+        let node_off = node as usize * node_size + cat_base;
+        if node_off + node_size > vol.len() {
+            break;
+        }
+        let f_link = be32(&vol[node_off..], 0);
+        let num = be16(&vol[node_off..], 10) as usize;
+        for i in 0..num {
+            let nd = &vol[node_off..node_off + node_size];
+            let slot = node_size - 2 * (i + 1);
+            let rec = be16(nd, slot) as usize;
+            let r = &nd[rec..];
+            if r.len() < 14 {
+                continue;
+            }
+            let key_len = be16(r, 0) as usize;
+            let name_len = be16(r, 12) as usize;
+            let name_end = 14 + name_len * 2;
+            if name_end > r.len() {
+                continue;
+            }
+            let name: String = r[14..name_end]
+                .chunks_exact(2)
+                .map(|c| u16::from_be_bytes([c[0], c[1]]))
+                .collect::<Vec<u16>>()
+                .iter()
+                .map(|&u| char::from_u32(u32::from(u)).unwrap_or('?'))
+                .collect();
+            if name != "com.apple.decmpfs" {
+                continue;
+            }
+            let body = 2 + key_len;
+            let size_off = node_off + rec + body + 12;
+            vol[size_off..size_off + 4].copy_from_slice(&new_size.to_be_bytes());
+            return true;
+        }
+        node = f_link;
+    }
+    false
+}
+
+/// Set the `compression_type` (LE u32) of the first `com.apple.decmpfs`
+/// inline-data attribute record found in the attributes B-tree leaf chain.
+fn patch_decmpfs_type(
+    vol: &mut [u8],
+    cat_base: usize,
+    node_size: usize,
+    first_leaf: u32,
+    new_type: u32,
+) -> bool {
+    let mut node = first_leaf;
+    while node != 0 {
+        let node_off = node as usize * node_size + cat_base;
+        if node_off + node_size > vol.len() {
+            break;
+        }
+        let f_link;
+        let num;
+        {
+            let nd = &vol[node_off..node_off + node_size];
+            f_link = be32(nd, 0);
+            num = be16(nd, 10) as usize;
+        }
+        for i in 0..num {
+            let nd = &vol[node_off..node_off + node_size];
+            let slot = node_size - 2 * (i + 1);
+            let rec = be16(nd, slot) as usize;
+            let r = &nd[rec..];
+            if r.len() < 14 {
+                continue;
+            }
+            let key_len = be16(r, 0) as usize;
+            let name_len = be16(r, 12) as usize;
+            let name_end = 14 + name_len * 2;
+            if name_end > r.len() {
+                continue;
+            }
+            let name: String = r[14..name_end]
+                .chunks_exact(2)
+                .map(|c| u16::from_be_bytes([c[0], c[1]]))
+                .collect::<Vec<u16>>()
+                .iter()
+                .map(|&u| char::from_u32(u32::from(u)).unwrap_or('?'))
+                .collect();
+            if name != "com.apple.decmpfs" {
+                continue;
+            }
+            let body = 2 + key_len;
+            // recordType@body (u32) must be inline-data (0x10); decmpfs header
+            // follows at body+16, compression_type (LE u32) at body+16+4.
+            let ct_off = node_off + rec + body + 16 + 4;
+            vol[ct_off..ct_off + 4].copy_from_slice(&new_type.to_le_bytes());
+            return true;
+        }
+        node = f_link;
+    }
+    false
 }

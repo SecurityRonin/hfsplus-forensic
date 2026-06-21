@@ -131,6 +131,51 @@ dir/file flags; `reads_real_file_contents` (`tests/catalog.rs:62`) requires
 the files we placed — derivable from the documented construction, hence Tier 2.
 This is **not yet** cross-checked against an independent HFS+ decoder.
 
+### HFS+ anomaly analyzer (`findings::audit`) — Tier 2, TSK-cross-checked
+
+`src/findings.rs` grades structural and metadata anomalies over the parsed
+volume — five `HFS-*` finding families — and is validated two ways in
+`tests/findings.rs`:
+
+**True-negative (clean real volumes are silent).** `audit()` returns **zero**
+anomalies on all three real `hdiutil`/`ditto`-created images
+(`clean_real_volume_has_no_anomalies`, `clean_real_nested_volume_has_no_anomalies`,
+`clean_real_decmpfs_volume_has_no_anomalies`). The analyzer's own catalog
+readings were cross-checked against **The Sleuth Kit** on the same images and
+agree exactly:
+
+| Image | TSK `fsstat` / `istat` | `findings::audit` reading | Anomalies |
+|---|---|---|---|
+| `hfs_plus_volume.bin` | HFS+, 2 files, 3 folders, block size 4096; HELLO.TXT (CNID 18) size 9, created == modified | 2 files, 3 folders, block size 4096; 1 block allocated covers a 9-byte fork; create == content-mod | 0 ✅ |
+| `hfs_plus_nested.bin` | HFS+; `SUB/NESTED.TXT` reachable | 2 files, 3 folders; nested path walked | 0 ✅ |
+| `hfs_decmpfs_volume.bin` | comp.bin (CNID 20) `compressed` flag set, `com.apple.decmpfs` xattr 16 B, **resource fork 34796 B present** | type-8 LZVN, resource-fork storage, non-empty resource fork → no missing-resource finding | 0 ✅ |
+
+TSK commands used as the oracle: `fsstat <img>` (file/folder counts, block size,
+volume dates), `istat <img> <inode>` (per-file size, timestamps, resource-fork
+size, `compressed` flag), `fls -r <img>` (catalog walk / CNIDs).
+
+**Positive (crafted corruption of those same real volumes).** Each anomaly
+family is driven by patching real volume bytes and asserting the matching graded
+finding fires (and that clean siblings stay silent), e.g.
+`corrupt_btree_node_link_is_flagged`, `leaf_height_anomaly_is_flagged`,
+`header_kind_on_nonzero_node_is_flagged` → `HFS-BTREE-NODE-INVALID`;
+`catalog_extents_mismatch_is_flagged` → `HFS-CATALOG-EXTENTS-MISMATCH`;
+`deleted_but_referenced_is_flagged` → `HFS-DELETED-BUT-REFERENCED`;
+`create_after_modify_is_flagged` / `timestamp_before_epoch_is_flagged` /
+`timestamp_after_volume_is_flagged` → `HFS-TIME-ANOMALY`;
+`decmpfs_missing_resource_is_flagged` / `decmpfs_empty_resource_logical_is_flagged`
+/ `decmpfs_inline_without_payload_is_flagged` / `decmpfs_truncated_header_is_flagged`
+/ `decmpfs_unknown_type_is_flagged` → `HFS-DECMPFS-MISSING-RESOURCE`. Ground
+truth is the byte we flipped, derivable from the documented construction — hence
+Tier 2.
+
+Each finding is an **observation** (`note()` reads "consistent with …"), never a
+verdict — the analyst/tribunal concludes. The analyzer is panic-free and
+bounds-checked like the reader; `findings.rs` carries **100% line coverage**
+(`cargo llvm-cov`) except a handful of defensive guards annotated
+`// cov:unreachable` (node-bounds and extent-record guards kept for
+defence-in-depth under their dominating invariant).
+
 ### Robustness — never panic, never over-read
 
 Production code is `#![forbid(unsafe_code)]` (enforced via `[lints.rust]
@@ -140,17 +185,20 @@ fork — decmpfs never degrades to silently-wrong output.
 
 ## Gaps and honest caveats
 
-- **HFS+ reader oracle is Tier 2, not Tier 1.** The volume/header/listing tests
-  validate against Apple's own `hdiutil`-written layout, but no *independent*
-  HFS+ decoder cross-checks the geometry and catalog walk. The recommended
-  oracle is **The Sleuth Kit** (`fsstat` for header geometry, `fls`/`icat` for
-  the catalog walk and data-fork extraction) on the same images — adding it would
-  lift this capability to Tier 1.
-- **No coverage gate or fuzzing harness yet.** CI runs `cargo fmt --check`,
-  `cargo clippy --all-targets -D warnings`, and `cargo test`; it does **not**
-  currently enforce `cargo llvm-cov` line coverage, and there is no `fuzz/`
-  cargo-fuzz workspace. Both are recommended fleet backstops to add (the
-  Paranoid-Gatekeeper standard), and neither is claimed here as in place.
+- **HFS+ catalog readings are TSK-cross-checked; the reader's tests are not.**
+  The **analyzer** (`findings::audit`) has its file/folder counts, sizes, and
+  timestamps reconciled against **The Sleuth Kit** `fsstat`/`istat`/`fls` on the
+  same images (see the analyzer section above) — a genuine independent oracle for
+  those readings. The reader's own integration tests (`tests/catalog.rs`) still
+  assert against the `hdiutil`-written layout only, without a TSK comparison in
+  the test body; wiring TSK output into `tests/catalog.rs` would lift the reader
+  tests themselves to Tier 1.
+- **No fuzzing harness yet.** CI runs `cargo fmt --check`, `cargo clippy
+  --all-targets -D warnings`, and `cargo test`. `findings.rs` holds 100% line
+  coverage (`cargo llvm-cov`, defensive guards annotated `// cov:unreachable`),
+  but CI does **not** yet *gate* on `cargo llvm-cov`, and there is no `fuzz/`
+  cargo-fuzz workspace. Both remain recommended fleet backstops to add (the
+  Paranoid-Gatekeeper standard).
 
 ## Reproducing the validation
 
@@ -167,6 +215,19 @@ cargo test --lib
 # Just the HFS+ reader integration tests (real hdiutil volumes)
 cargo test --test catalog
 
+# Just the HFS+ anomaly analyzer (clean true-negatives + crafted positives)
+cargo test --test findings
+
 # Just the end-to-end decmpfs read_file decompression
 cargo test --test decmpfs_integration
+```
+
+Cross-check the analyzer's catalog readings against The Sleuth Kit on the same
+images (oracle):
+
+```bash
+fsstat tests/data/hfs_plus_volume.bin            # file/folder counts, block size
+istat  tests/data/hfs_plus_volume.bin 18         # HELLO.TXT size + timestamps
+fls -r tests/data/decmpfs/hfs_decmpfs_volume.bin # catalog walk / CNIDs
+istat  tests/data/decmpfs/hfs_decmpfs_volume.bin 20  # comp.bin: compressed flag + resource fork
 ```

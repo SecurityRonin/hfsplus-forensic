@@ -14,13 +14,14 @@
 //! Validated against real `hdiutil`/`ditto`-created HFS+ volumes.
 
 pub mod decmpfs;
+pub mod findings;
 
 /// Byte offset of the HFS+ volume header from the start of the volume.
-const VOLUME_HEADER_OFFSET: usize = 1024;
+pub(crate) const VOLUME_HEADER_OFFSET: usize = 1024;
 /// HFS+ signature `H+` (TN1150).
-const SIG_HFS_PLUS: u16 = 0x482B;
+pub(crate) const SIG_HFS_PLUS: u16 = 0x482B;
 /// HFSX signature `HX` (case-sensitive variant).
-const SIG_HFSX: u16 = 0x4858;
+pub(crate) const SIG_HFSX: u16 = 0x4858;
 
 /// Which Apple volume signature was found.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -89,7 +90,7 @@ const ROOT_FOLDER_CNID: u32 = 2;
 const RECORD_FOLDER: i16 = 1;
 const RECORD_FILE: i16 = 2;
 /// Bound on catalog leaf nodes walked, guarding against a corrupt `fLink` chain.
-const MAX_LEAF_NODES: u32 = 65536;
+pub(crate) const MAX_LEAF_NODES: u32 = 65536;
 
 /// An entry in an HFS+ directory.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -103,35 +104,44 @@ pub struct HfsEntry {
 }
 
 /// Located catalog B-tree geometry within an HFS+ volume.
-struct CatalogLoc {
-    cat_base: usize,
-    node_size: usize,
-    first_leaf: u32,
-    block_size: usize,
+pub(crate) struct CatalogLoc {
+    pub(crate) cat_base: usize,
+    pub(crate) node_size: usize,
+    pub(crate) first_leaf: u32,
+    pub(crate) block_size: usize,
 }
 
+/// Volume-header byte offset of the extentsFile `HFSPlusForkData` (TN1150) —
+/// the extents-overflow B-tree, holding extent records for files whose fork
+/// outgrows its 8 inline extents.
+pub(crate) const EXTENTS_FORK_OFFSET: usize = 192;
 /// Volume-header byte offset of the catalogFile `HFSPlusForkData` (TN1150).
-const CATALOG_FORK_OFFSET: usize = 272;
+pub(crate) const CATALOG_FORK_OFFSET: usize = 272;
 /// Volume-header byte offset of the attributesFile `HFSPlusForkData` (the
 /// catalogFile's successor, 80 bytes later) — home of extended attributes,
 /// including `com.apple.decmpfs`.
-const ATTRIBUTES_FORK_OFFSET: usize = 352;
+pub(crate) const ATTRIBUTES_FORK_OFFSET: usize = 352;
 
 /// Locate the catalog B-tree from the volume header (its first extent).
-fn locate_catalog(volume: &[u8]) -> Option<CatalogLoc> {
+pub(crate) fn locate_catalog(volume: &[u8]) -> Option<CatalogLoc> {
     locate_btree(volume, CATALOG_FORK_OFFSET)
 }
 
 /// Locate the attributes B-tree, or `None` when the volume has no attributes
 /// file (its fork holds zero blocks — i.e. no extended attributes anywhere).
-fn locate_attributes(volume: &[u8]) -> Option<CatalogLoc> {
+pub(crate) fn locate_attributes(volume: &[u8]) -> Option<CatalogLoc> {
     locate_btree(volume, ATTRIBUTES_FORK_OFFSET)
+}
+
+/// Locate the extents-overflow B-tree, or `None` when the volume has none.
+pub(crate) fn locate_extents(volume: &[u8]) -> Option<CatalogLoc> {
+    locate_btree(volume, EXTENTS_FORK_OFFSET)
 }
 
 /// Locate a B-tree whose first-extent `HFSPlusForkData` sits at
 /// `fork_offset_in_header` bytes into the volume header. The catalog and
 /// attributes files share the identical fork-data + B-tree-header layout.
-fn locate_btree(volume: &[u8], fork_offset_in_header: usize) -> Option<CatalogLoc> {
+pub(crate) fn locate_btree(volume: &[u8], fork_offset_in_header: usize) -> Option<CatalogLoc> {
     let h = VOLUME_HEADER_OFFSET;
     let fork = h.checked_add(fork_offset_in_header)?;
     if volume.len() < fork + 20 {
@@ -172,7 +182,7 @@ fn locate_btree(volume: &[u8], fork_offset_in_header: usize) -> Option<CatalogLo
 }
 
 /// Walk the catalog leaf-node chain, invoking `f` with each record slice.
-fn for_each_record(volume: &[u8], loc: &CatalogLoc, mut f: impl FnMut(&[u8])) {
+pub(crate) fn for_each_record(volume: &[u8], loc: &CatalogLoc, mut f: impl FnMut(&[u8])) {
     let mut node = loc.first_leaf;
     let mut walked = 0u32;
     while node != 0 && walked < MAX_LEAF_NODES {
@@ -332,7 +342,10 @@ fn file_forks(rec: &[u8], cnid: u32) -> Option<(Fork, Fork)> {
     let resource_fork = if data + 248 <= rec.len() {
         parse_fork(&rec[data + 168..])?
     } else {
-        Fork { logical: 0, extents: Vec::new() }
+        Fork {
+            logical: 0,
+            extents: Vec::new(),
+        }
     };
     Some((data_fork, resource_fork))
 }
@@ -378,7 +391,7 @@ fn fork_bytes(volume: &[u8], block_size: usize, fork: &Fork) -> Option<Vec<u8>> 
 /// Look up the `com.apple.decmpfs` extended attribute for `cnid` by walking the
 /// attributes B-tree. Returns `None` if the volume has no attributes file or the
 /// file carries no such attribute (i.e. it is not transparently compressed).
-fn decmpfs_xattr(volume: &[u8], cnid: u32) -> Option<Vec<u8>> {
+pub(crate) fn decmpfs_xattr(volume: &[u8], cnid: u32) -> Option<Vec<u8>> {
     let loc = locate_attributes(volume)?;
     let mut found = None;
     for_each_record(volume, &loc, |rec| {
@@ -425,7 +438,7 @@ fn attr_inline_value(rec: &[u8], cnid: u32, want_name: &str) -> Option<Vec<u8>> 
 }
 
 /// Decode a big-endian UTF-16 byte slice to a `String` (lossy).
-fn decode_utf16(bytes: &[u8]) -> String {
+pub(crate) fn decode_utf16(bytes: &[u8]) -> String {
     let units: Vec<u16> = bytes
         .chunks_exact(2)
         .map(|c| u16::from_be_bytes([c[0], c[1]]))
@@ -433,10 +446,10 @@ fn decode_utf16(bytes: &[u8]) -> String {
     String::from_utf16_lossy(&units)
 }
 
-fn be16(b: &[u8]) -> u16 {
+pub(crate) fn be16(b: &[u8]) -> u16 {
     u16::from_be_bytes([b[0], b[1]])
 }
-fn be32(b: &[u8]) -> u32 {
+pub(crate) fn be32(b: &[u8]) -> u32 {
     u32::from_be_bytes([b[0], b[1], b[2], b[3]])
 }
 
