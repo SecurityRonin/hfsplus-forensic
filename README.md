@@ -46,7 +46,9 @@ Geometry and listing only; on-disk journal replay and resource-fork specifics ar
 
 ## Validation
 
-Tests run against **real `hdiutil`-created HFS+ output** — a volume header and a populated volume (`HELLO.TXT` / `READ.ME` / `SUBDIR`) — so the parser is checked against genuine Apple structures, not hand-built fixtures.
+Every capability is checked against **real Apple-produced bytes**, not hand-built fixtures. The HFS+ reader (header geometry, catalog listing, data-fork extraction) runs against **real `hdiutil`-created volumes**. The `decmpfs` transparent-compression codecs are validated against **real `ditto --hfsCompression` / `afsctool` forks** — and on a clean **macOS 26.5 (Tahoe)** system, with Apple's own `compression_decode_buffer` as the answer key — so LZVN, zlib, and LZFSE are each decoded and matched against the original pre-compression file.
+
+Full oracle-by-oracle, corpus-by-corpus evidence (and the honest gaps — the HFS+ reader is not yet cross-checked against The Sleuth Kit): [securityronin.github.io/hfsplus-forensic/validation](https://securityronin.github.io/hfsplus-forensic/validation/).
 
 ## Related
 
