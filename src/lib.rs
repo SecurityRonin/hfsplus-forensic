@@ -15,6 +15,8 @@
 
 pub mod decmpfs;
 pub mod findings;
+#[cfg(feature = "vfs")]
+pub mod vfs;
 
 /// Byte offset of the HFS+ volume header from the start of the volume.
 pub(crate) const VOLUME_HEADER_OFFSET: usize = 1024;
@@ -277,6 +279,89 @@ pub fn read_file(volume: &[u8], cnid: u32) -> Option<Vec<u8>> {
     }
 
     fork_bytes(volume, loc.block_size, &data_fork)
+}
+
+/// Per-CNID metadata for one catalog entry: kind, data-fork size, and the three
+/// HFS+ MAC timestamps. Timestamps are raw HFS+ values (`u32` seconds since the
+/// HFS+ epoch, 1904-01-01 UTC) — a consumer converts them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HfsStat {
+    /// Catalog node ID this stat describes.
+    pub cnid: u32,
+    /// True for a folder, false for a file.
+    pub is_dir: bool,
+    /// Data-fork logical size in bytes (0 for a folder).
+    pub size: u64,
+    /// Creation time (HFS+ epoch seconds).
+    pub created: u32,
+    /// Content-modification time (HFS+ epoch seconds).
+    pub modified: u32,
+    /// Access time (HFS+ epoch seconds).
+    pub accessed: u32,
+}
+
+/// Look up the [`HfsStat`] of a catalog entry by CNID, walking the catalog B-tree
+/// to its file/folder record. Returns the entry's kind, data-fork logical size
+/// (0 for a folder), and its three HFS+ MAC timestamps (raw, unconverted).
+///
+/// `volume` must contain the whole HFS+ volume from its first byte (header at
+/// offset 1024). Returns `None` if this is not an HFS+ volume or no file/folder
+/// record with `cnid` exists (thread records carry no times and are skipped).
+#[must_use]
+pub fn stat(volume: &[u8], cnid: u32) -> Option<HfsStat> {
+    let loc = locate_catalog(volume)?;
+    let mut found = None;
+    for_each_record(volume, &loc, |rec| {
+        if found.is_none() {
+            found = record_stat(rec, cnid);
+        }
+    });
+    found
+}
+
+/// If `rec` is the file or folder record for `cnid`, return its [`HfsStat`].
+/// Both HFSPlusCatalogFile and HFSPlusCatalogFolder share createDate@+16,
+/// contentModDate@+20, and accessDate@+28 (relative to the record body); the
+/// file additionally carries its data-fork `HFSPlusForkData` at +88, whose
+/// logicalSize is the first 8 bytes (TN1150).
+fn record_stat(rec: &[u8], cnid: u32) -> Option<HfsStat> {
+    if rec.len() < 8 {
+        return None;
+    }
+    let key_len = be16(&rec[0..2]) as usize;
+    let data = 2 + key_len;
+    // Need through accessDate@+32 at minimum for either record kind.
+    if data + 32 > rec.len() {
+        return None;
+    }
+    let is_dir = match i16::from_be_bytes([rec[data], rec[data + 1]]) {
+        RECORD_FOLDER => true,
+        RECORD_FILE => false,
+        _ => return None, // thread records and anything else carry no times
+    };
+    if be32(&rec[data + 8..data + 12]) != cnid {
+        return None;
+    }
+    let created = be32(&rec[data + 16..data + 20]);
+    let modified = be32(&rec[data + 20..data + 24]);
+    let accessed = be32(&rec[data + 28..data + 32]);
+    // A file record carries its data-fork logicalSize at +88 (8 bytes BE); a
+    // folder has no fork, so its size is 0.
+    let size = if is_dir {
+        0
+    } else if data + 96 <= rec.len() {
+        u64::from_be_bytes(rec[data + 88..data + 96].try_into().ok()?)
+    } else {
+        0
+    };
+    Some(HfsStat {
+        cnid,
+        is_dir,
+        size,
+        created,
+        modified,
+        accessed,
+    })
 }
 
 /// Parse a catalog record into `(parentID, entry)` for file/folder records.

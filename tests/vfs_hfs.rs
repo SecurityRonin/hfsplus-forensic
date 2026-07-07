@@ -99,6 +99,11 @@ fn meta_matches_istat() {
     assert!(m.times.born.is_some());
     assert!(m.times.modified.is_some());
     assert!(m.times.accessed.is_some());
+
+    // SUBDIR (CNID 19) is a directory with size 0.
+    let d = fs.meta(FileId::Opaque(19)).unwrap();
+    assert_eq!(d.kind, NodeKind::Dir);
+    assert_eq!(d.size, 0);
 }
 
 #[test]
@@ -140,4 +145,54 @@ fn unsupported_file_id_variant_is_loud() {
     let fs = open_real_volume();
     // An NTFS-style id addresses a different filesystem — refused, never guessed.
     assert!(fs.meta(FileId::NtfsRef { entry: 5, seq: 5 }).is_err());
+}
+
+#[test]
+fn cnid_beyond_u32_is_out_of_range() {
+    let fs = open_real_volume();
+    // An opaque id that cannot be a 32-bit CNID is rejected, never truncated.
+    assert!(fs.meta(FileId::Opaque(u64::from(u32::MAX) + 1)).is_err());
+}
+
+#[test]
+fn read_at_named_stream_is_unsupported() {
+    let fs = open_real_volume();
+    // HFS+ resource/named streams are not wired through read_at yet — loud.
+    let mut buf = [0u8; 8];
+    assert!(fs
+        .read_at(FileId::Opaque(18), StreamId::Named(1), 0, &mut buf)
+        .is_err());
+}
+
+#[test]
+fn meta_of_unknown_cnid_is_loud() {
+    let fs = open_real_volume();
+    // No catalog record for this CNID — a Decode error, never a fabricated node.
+    assert!(fs.meta(FileId::Opaque(999_999)).is_err());
+}
+
+#[test]
+fn read_at_of_a_directory_is_loud() {
+    let fs = open_real_volume();
+    // SUBDIR (CNID 19) has no data fork; read_file returns None → Decode error.
+    let mut buf = [0u8; 8];
+    assert!(fs
+        .read_at(FileId::Opaque(19), StreamId::Default, 0, &mut buf)
+        .is_err());
+}
+
+#[test]
+fn forensic_surface_defaults_are_empty() {
+    let fs = open_real_volume();
+    // extents/deleted/unallocated are follow-ups: empty streams, not errors.
+    assert_eq!(
+        fs.extents(FileId::Opaque(18), StreamId::Default)
+            .unwrap()
+            .count(),
+        0
+    );
+    assert_eq!(fs.deleted().unwrap().count(), 0);
+    assert_eq!(fs.unallocated().unwrap().count(), 0);
+    // A node with no reparse target reads as an empty link.
+    assert!(fs.read_link(FileId::Opaque(18), 4096).unwrap().is_empty());
 }

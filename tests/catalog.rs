@@ -86,6 +86,24 @@ fn read_file_unknown_cnid_is_none() {
     assert!(hfs::read_file(&volume(), 999_999).is_none());
 }
 
+#[test]
+fn stat_returns_size_kind_and_times() {
+    let vol = volume();
+    // HELLO.TXT (CNID 18) is a 9-byte file.
+    let s = hfs::stat(&vol, 18).expect("stat HELLO.TXT");
+    assert_eq!(s.cnid, 18);
+    assert!(!s.is_dir);
+    assert_eq!(s.size, 9);
+    // A real hdiutil volume stamps non-zero MAC times.
+    assert!(s.created != 0 && s.modified != 0);
+    // SUBDIR (CNID 19) is a folder with no data fork.
+    let d = hfs::stat(&vol, 19).expect("stat SUBDIR");
+    assert!(d.is_dir);
+    assert_eq!(d.size, 0);
+    // An unknown CNID has no record.
+    assert!(hfs::stat(&vol, 999_999).is_none());
+}
+
 fn nested() -> Vec<u8> {
     std::fs::read(concat!(
         env!("CARGO_MANIFEST_DIR"),
