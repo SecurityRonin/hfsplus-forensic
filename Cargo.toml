@@ -26,6 +26,14 @@ lzfse_rust = "0.2"
 lzvn = { version = "0.1", package = "lzvn-core" }
 # decmpfs format knowledge (magic, type→algorithm/storage map, chunk size).
 forensicnomicon = "1"
+# Universal read-only VFS contract. Optional: the `FileSystem` adapter (src/vfs.rs)
+# lives behind the `vfs` feature so a bare reader does not pull it in. forensic-vfs
+# is safe Rust, so `unsafe_code = "forbid"` stays intact.
+forensic-vfs = { version = "0.1", optional = true }
+
+[features]
+# Enable `impl FileSystem for HfsFs` (the forensic-vfs adapter).
+vfs = ["dep:forensic-vfs"]
 
 [lints.rust]
 unsafe_code = "forbid"
