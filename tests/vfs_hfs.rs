@@ -34,6 +34,23 @@ fn open_real_volume() -> Arc<dyn FileSystem> {
     Arc::new(HfsFs::new(volume_bytes()).expect("open HFS+ volume"))
 }
 
+/// A volume whose header carries a valid `H+` signature and block size (so
+/// `HfsFs::new` mounts it) but whose catalog fork has zero allocation blocks —
+/// so the catalog B-tree cannot be located. This is the real forensic case of a
+/// truncated/wiped catalog: mounting succeeds, but any directory listing fails
+/// loud rather than reporting an empty filesystem.
+fn header_only_no_catalog() -> Vec<u8> {
+    const H: usize = 1024;
+    let mut v = vec![0u8; H + 400];
+    v[H] = 0x48; // 'H'
+    v[H + 1] = 0x2B; // '+'
+    v[H + 3] = 4; // version 4
+    v[H + 40..H + 44].copy_from_slice(&4096u32.to_be_bytes()); // block_size
+                                                               // The catalog fork sits at H+272; its totalBlocks (fork+12..16) stays zero,
+                                                               // so locate_catalog() returns None and list_dir() yields None.
+    v
+}
+
 #[test]
 fn identity_and_root() {
     let fs = open_real_volume();
@@ -195,4 +212,20 @@ fn forensic_surface_defaults_are_empty() {
     assert_eq!(fs.unallocated().unwrap().count(), 0);
     // A node with no reparse target reads as an empty link.
     assert!(fs.read_link(FileId::Opaque(18), 4096).unwrap().is_empty());
+}
+
+#[test]
+fn read_dir_with_unlocatable_catalog_is_loud() {
+    // The header mounts (valid signature) but the catalog cannot be located, so
+    // read_dir must surface a Decode error, never a silently empty directory.
+    let fs = HfsFs::new(header_only_no_catalog()).expect("valid header mounts");
+    assert!(fs.read_dir(fs.root()).is_err());
+}
+
+#[test]
+fn lookup_with_unlocatable_catalog_is_loud() {
+    // Same guard on the lookup path: an unlistable catalog is a loud Decode
+    // error, not a "name not found".
+    let fs = HfsFs::new(header_only_no_catalog()).expect("valid header mounts");
+    assert!(fs.lookup(fs.root(), b"HELLO.TXT").is_err());
 }

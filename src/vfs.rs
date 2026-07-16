@@ -101,12 +101,16 @@ impl FileSystem for HfsFs {
 
     fn read_dir(&self, ino: FileId) -> VfsResult<DirStream> {
         let cnid = cnid_of(ino)?;
+        // `new` validated the volume header signature, but the catalog B-tree can
+        // still be unlocatable (a fork with zero totalBlocks / unreadable
+        // geometry) — surface that as a loud Decode error, never a silent empty
+        // directory.
         let entries = crate::list_dir(&self.volume, cnid).ok_or_else(|| VfsError::Decode {
             layer: "hfs+ catalog",
             offset: 0,
-            detail: format!("cannot list directory CNID {cnid}"), // cov:unreachable: list_dir returns None only if locate_catalog fails, impossible after new() validated the header
-            bytes: SmallHex::new(&[]), // cov:unreachable: same guard as above
-        })?; // cov:unreachable: same guard as above
+            detail: format!("cannot list directory CNID {cnid}"),
+            bytes: SmallHex::new(&[]),
+        })?;
         let out: Vec<VfsResult<DirEntry>> = entries
             .into_iter()
             .map(|e| {
@@ -133,12 +137,14 @@ impl FileSystem for HfsFs {
 
     fn lookup(&self, parent: FileId, name: &[u8]) -> VfsResult<Option<FileId>> {
         let cnid = cnid_of(parent)?;
+        // As in `read_dir`: a validated header does not guarantee a locatable
+        // catalog, so an unlistable directory is a loud Decode error.
         let entries = crate::list_dir(&self.volume, cnid).ok_or_else(|| VfsError::Decode {
             layer: "hfs+ catalog",
             offset: 0,
-            detail: format!("cannot list directory CNID {cnid}"), // cov:unreachable: list_dir returns None only if locate_catalog fails, impossible after new() validated the header
-            bytes: SmallHex::new(&[]), // cov:unreachable: same guard as above
-        })?; // cov:unreachable: same guard as above
+            detail: format!("cannot list directory CNID {cnid}"),
+            bytes: SmallHex::new(&[]),
+        })?;
         for e in entries {
             if e.name.as_bytes() == name {
                 return Ok(Some(FileId::Opaque(u64::from(e.cnid))));

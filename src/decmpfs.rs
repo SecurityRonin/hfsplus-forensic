@@ -541,4 +541,46 @@ mod tests {
             Err(DecmpfsError::MissingResourceFork)
         );
     }
+
+    // ── every DecmpfsError variant renders a distinct, self-describing message
+    //    (the Display arm is what a caller logs when a decmpfs file is rejected) ──
+    #[test]
+    fn error_display_is_self_describing_per_variant() {
+        assert_eq!(
+            DecmpfsError::Truncated.to_string(),
+            "decmpfs xattr shorter than 16-byte header"
+        );
+        assert_eq!(
+            DecmpfsError::BadMagic(0xdead_beef).to_string(),
+            "decmpfs bad magic 0xdeadbeef (expected 'cmpf')"
+        );
+        assert_eq!(
+            DecmpfsError::UnknownType(99).to_string(),
+            "decmpfs unknown compression_type 99"
+        );
+        assert_eq!(
+            DecmpfsError::Unsupported("LZBitmap (no public spec)").to_string(),
+            "decmpfs unsupported: LZBitmap (no public spec)"
+        );
+        assert_eq!(
+            DecmpfsError::MissingResourceFork.to_string(),
+            "decmpfs resource-fork type but no resource fork supplied"
+        );
+        assert_eq!(
+            DecmpfsError::OutOfBounds.to_string(),
+            "decmpfs length/offset field out of bounds"
+        );
+        assert_eq!(
+            DecmpfsError::Codec("zlib").to_string(),
+            "decmpfs codec error: zlib"
+        );
+        assert_eq!(
+            DecmpfsError::LengthMismatch {
+                expected: 999,
+                got: 19
+            }
+            .to_string(),
+            "decmpfs length mismatch: expected 999, got 19"
+        );
+    }
 }
