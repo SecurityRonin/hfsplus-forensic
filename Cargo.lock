@@ -35,9 +35,9 @@ dependencies = [
 
 [[package]]
 name = "forensic-vfs"
-version = "0.1.0"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0e1fd9ca5012d956da1cd418e2c40732f3e7d18638cd8705551e04fc7cc67030"
+checksum = "b8684752c5461349ae9464e0aa38ca2b1930be3491f84e11298f4c11b4760ffe"
 dependencies = [
  "thiserror",
 ]
@@ -69,7 +69,7 @@ dependencies = [
 
 [[package]]
 name = "hfsplus-forensic"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "flate2",
  "forensic-vfs",
