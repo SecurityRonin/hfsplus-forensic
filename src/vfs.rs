@@ -74,7 +74,7 @@ impl HfsFs {
 
 impl FileSystem for HfsFs {
     fn kind(&self) -> FsKind {
-        FsKind::HfsPlus
+        FsKind::HFS_PLUS
     }
 
     fn root(&self) -> FileId {

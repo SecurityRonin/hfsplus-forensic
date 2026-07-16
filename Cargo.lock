@@ -35,10 +35,12 @@ dependencies = [
 
 [[package]]
 name = "forensic-vfs"
-version = "0.2.0"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b8684752c5461349ae9464e0aa38ca2b1930be3491f84e11298f4c11b4760ffe"
+checksum = "3cba259572a35ca7a2a71c2f2c7a225c9edcd57ddfbcc00b9ebaefebe4573891"
 dependencies = [
+ "forensicnomicon-core",
+ "state-history-forensic",
  "thiserror",
 ]
 
@@ -54,9 +56,9 @@ dependencies = [
 
 [[package]]
 name = "forensicnomicon-core"
-version = "1.0.0"
+version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f5d5b96ffd37d1e758a1657839de8b4d5e7bfc024a5500509d07ff7acd7b9461"
+checksum = "b4ae8f9096cf3b0fb8414b1e419e7a8697902892082a9180cbd009d6afe87caa"
 
 [[package]]
 name = "forensicnomicon-data"
@@ -69,7 +71,7 @@ dependencies = [
 
 [[package]]
 name = "hfsplus-forensic"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "flate2",
  "forensic-vfs",
@@ -123,6 +125,12 @@ name = "simd-adler32"
 version = "0.3.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "703d5c7ef118737c72f1af64ad2f6f8c5e1921f818cdcb97b8fe6fc69bf66214"
+
+[[package]]
+name = "state-history-forensic"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "06d95f05c0dd49a5dfae0eb6cb6fae7bb3bd5c1f787300c94a3a5adecb44d98f"
 
 [[package]]
 name = "syn"

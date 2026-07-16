@@ -54,7 +54,7 @@ fn header_only_no_catalog() -> Vec<u8> {
 #[test]
 fn identity_and_root() {
     let fs = open_real_volume();
-    assert_eq!(fs.kind(), FsKind::HfsPlus);
+    assert_eq!(fs.kind(), FsKind::HFS_PLUS);
     assert_eq!(fs.timestamp_zone(), TimeZonePolicy::Utc);
     // The HFS+ root folder is CNID 2, addressed as an opaque inode.
     assert_eq!(fs.root(), FileId::Opaque(2));
