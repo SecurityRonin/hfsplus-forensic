@@ -172,7 +172,12 @@ fn decode_inline(
         // stored uncompressed after that marker (go-apfs `CMP_ATTR_LZVN`).
         Algorithm::Lzvn => match payload.first() {
             Some(0x06) => Ok(payload.get(1..).unwrap_or(&[]).to_vec()),
-            _ => lzvn_decode(payload, uncompressed_size),
+            // Inline storage inflates to at most CHUNK_SIZE (module invariant);
+            // cap the attacker-controlled length so a malformed header cannot
+            // drive an unbounded allocation inside the codec. A larger claimed
+            // size then fails loud via the caller's length check, never panics.
+            // Mirrors the `.min(CHUNK_SIZE)` cap on the resource-fork path.
+            _ => lzvn_decode(payload, uncompressed_size.min(CHUNK_SIZE)),
         },
         Algorithm::Lzfse => lzfse_decode(payload),
         // LzBitmap is rejected before dispatch; the arm keeps the match total
@@ -211,7 +216,11 @@ fn decode_zlib_resource_fork(fork: &[u8], uncompressed_size: usize) -> Result<Ve
         .checked_add(4)
         .ok_or(DecmpfsError::OutOfBounds)?;
     let num_blocks = le_u32(fork, table)? as usize;
-    let mut out = Vec::with_capacity(uncompressed_size);
+    // `uncompressed_size` is an attacker-controlled u64 from the xattr header;
+    // cap the pre-allocation hint against the real input so a malformed value
+    // cannot request an unbounded allocation. The Vec still grows as blocks
+    // decode, and the caller verifies the final length.
+    let mut out = Vec::with_capacity(uncompressed_size.min(fork.len()));
     for i in 0..num_blocks {
         let entry = table
             .checked_add(4)
@@ -245,7 +254,9 @@ fn decode_chunked_resource_fork(
     let n_slots = (header_size / 4)
         .checked_sub(1)
         .ok_or(DecmpfsError::OutOfBounds)?;
-    let mut out = Vec::with_capacity(uncompressed_size);
+    // Cap the pre-allocation hint against the real input (see note in
+    // `decode_zlib_resource_fork`): `uncompressed_size` is attacker-controlled.
+    let mut out = Vec::with_capacity(uncompressed_size.min(fork.len()));
     let mut src = header_size;
     for i in 0..n_slots {
         if out.len() >= uncompressed_size {
