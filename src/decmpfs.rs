@@ -39,7 +39,7 @@ pub enum DecmpfsError {
     BadMagic(u32),
     /// `compression_type` is not a documented value.
     UnknownType(u32),
-    /// A documented but unsupported type (LZBitmap — no public spec; or the
+    /// A documented but unsupported type (`LZBitmap` — no public spec; or the
     /// de-dup generation store, type 5, which has no payload here).
     Unsupported(&'static str),
     /// An even (resource-fork) type was seen but no resource fork was supplied.
@@ -301,7 +301,7 @@ fn inflate(data: &[u8]) -> Result<Vec<u8>> {
 /// A real macOS `decmpfs` resource-fork block ends with the LZVN end-of-stream
 /// opcode and is then followed by 80–300 trailing bytes that the kernel ignores.
 /// The previous bvxn+LZFSE-stream framing declared those trailing bytes as
-/// payload, so a strict whole-stream decoder (lzfse_rust) rejected every real
+/// payload, so a strict whole-stream decoder (`lzfse_rust`) rejected every real
 /// Tahoe type-8 file. [`lzvn::decode`] stops at the end-of-stream opcode, so it
 /// reads the genuine blocks. (Validated 25/25 on macOS 26.5 vs 0/25 before.)
 fn lzvn_decode(chunk: &[u8], uncompressed_len: usize) -> Result<Vec<u8>> {

@@ -19,7 +19,7 @@ use crate::{
     CatalogLoc, VOLUME_HEADER_OFFSET,
 };
 
-/// The canonical 5-level severity scale, shared across every SecurityRonin
+/// The canonical 5-level severity scale, shared across every `SecurityRonin`
 /// analyzer via [`forensicnomicon::report`].
 pub use forensicnomicon::report::Severity;
 
@@ -139,15 +139,18 @@ impl AnomalyKind {
     #[must_use]
     pub fn severity(&self) -> Severity {
         match self {
-            // A rewired/invalid B-tree node can strand or hide whole subtrees.
-            AnomalyKind::BtreeNodeInvalid { .. } => Severity::High,
-            // The two allocation records disagreeing points at edited metadata.
-            AnomalyKind::CatalogExtentsMismatch { .. } => Severity::High,
-            // A leaked thread is recoverable-deletion evidence, not destruction.
-            AnomalyKind::DeletedButReferenced { .. } => Severity::Medium,
-            AnomalyKind::TimeAnomaly { .. } => Severity::Medium,
-            // The compressed payload is gone — the file cannot be read back.
-            AnomalyKind::DecmpfsMissingResource { .. } => Severity::High,
+            // A rewired/invalid B-tree node can strand or hide whole subtrees;
+            // the two allocation records disagreeing points at edited metadata;
+            // the compressed payload being gone means the file cannot be read
+            // back — all three are High.
+            AnomalyKind::BtreeNodeInvalid { .. }
+            | AnomalyKind::CatalogExtentsMismatch { .. }
+            | AnomalyKind::DecmpfsMissingResource { .. } => Severity::High,
+            // A leaked thread is recoverable-deletion evidence, not destruction;
+            // a timestamp-order anomaly is likewise Medium.
+            AnomalyKind::DeletedButReferenced { .. } | AnomalyKind::TimeAnomaly { .. } => {
+                Severity::Medium
+            }
         }
     }
 

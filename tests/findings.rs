@@ -207,7 +207,7 @@ fn decmpfs_missing_resource_is_flagged() {
                     u64::from_be_bytes(r[data + 168..data + 176].try_into().unwrap());
                 if rsrc_logical > 0 {
                     let base = node_off + rec + data + 168;
-                    for b in vol[base + 12..base + 16 + 64].iter_mut() {
+                    for b in &mut vol[base + 12..base + 16 + 64] {
                         *b = 0;
                     }
                     patched = true;
@@ -333,7 +333,7 @@ fn leaf_height_anomaly_is_flagged() {
     );
 }
 
-/// decmpfs xattr whose compression_type is undocumented is flagged (the reader
+/// decmpfs xattr whose `compression_type` is undocumented is flagged (the reader
 /// would refuse to materialize the file).
 #[test]
 fn decmpfs_unknown_type_is_flagged() {
@@ -493,7 +493,7 @@ fn decmpfs_empty_resource_logical_is_flagged() {
                     // Zero the resource fork's entire HFSPlusForkData (80 bytes):
                     // logicalSize + clump + totalBlocks + all 8 extents.
                     let base = node_off + rec + data + 168;
-                    for b in vol[base..base + 80].iter_mut() {
+                    for b in &mut vol[base..base + 80] {
                         *b = 0;
                     }
                     patched = true;

@@ -324,7 +324,7 @@ pub fn stat(volume: &[u8], cnid: u32) -> Option<HfsStat> {
 }
 
 /// If `rec` is the file or folder record for `cnid`, return its [`HfsStat`].
-/// Both HFSPlusCatalogFile and HFSPlusCatalogFolder share createDate@+16,
+/// Both `HFSPlusCatalogFile` and `HFSPlusCatalogFolder` share createDate@+16,
 /// contentModDate@+20, and accessDate@+28 (relative to the record body); the
 /// file additionally carries its data-fork `HFSPlusForkData` at +88, whose
 /// logicalSize is the first 8 bytes (TN1150).
@@ -395,7 +395,7 @@ fn record_entry(rec: &[u8]) -> Option<(u32, HfsEntry)> {
     Some((parent_id, HfsEntry { name, is_dir, cnid }))
 }
 
-/// A file fork: logical size plus its (start_block, block_count) extents.
+/// A file fork: logical size plus its (`start_block`, `block_count`) extents.
 struct Fork {
     logical: u64,
     extents: Vec<(u32, u32)>,
@@ -493,7 +493,7 @@ pub(crate) fn decmpfs_xattr(volume: &[u8], cnid: u32) -> Option<Vec<u8>> {
 
 /// If `rec` is the inline-data attribute record for `(cnid, want_name)`, return
 /// its value. `HFSPlusAttrKey`: keyLength(2) pad(2) fileID@4 startBlock@8
-/// attrNameLen@12 attrName@14 (UTF-16 BE). `HFSPlusAttrData`: recordType@key_end
+/// attrNameLen@12 attrName@14 (UTF-16 BE). `HFSPlusAttrData`: `recordType@key_end`
 /// reserved[2] attrSize@+12 attrData@+16.
 fn attr_inline_value(rec: &[u8], cnid: u32, want_name: &str) -> Option<Vec<u8>> {
     if rec.len() < 14 {
