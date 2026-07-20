@@ -37,3 +37,11 @@ vfs = ["dep:forensic-vfs"]
 
 [lints.rust]
 unsafe_code = "forbid"
+
+[lints.clippy]
+# Panic-free posture for this untrusted-input HFS+/HFSX parser: a malformed
+# image must never trigger a panic via unwrap/expect. Tests may still unwrap
+# (see the `#![cfg_attr(test, allow(...))]` in src/lib.rs and the per-file
+# allow in the integration tests under tests/).
+unwrap_used = { level = "deny", priority = 0 }
+expect_used = { level = "deny", priority = 0 }

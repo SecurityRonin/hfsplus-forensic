@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 // HFS+ reader tests, validated against REAL `hdiutil`-created volumes:
 //   tests/data/hfs_plus_header.bin  — first 2 KiB of an HFS+ volume (header)
 //   tests/data/hfs_plus_volume.bin  — a small layout-NONE HFS+ volume with

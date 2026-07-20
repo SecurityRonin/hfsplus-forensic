@@ -6,6 +6,7 @@
 //! bytes stored uncompressed (the control). The payload is a deterministic LCG
 //! block repeated 32× — regenerated here byte-for-byte, so no expected-output
 //! fixture is committed.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use hfsplus_forensic as hfs;
 

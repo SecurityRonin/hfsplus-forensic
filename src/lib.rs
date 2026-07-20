@@ -13,6 +13,10 @@
 //! / LZFSE, inline xattr or resource fork). Journal replay is out of scope.
 //! Validated against real `hdiutil`/`ditto`-created HFS+ volumes.
 
+// Tests legitimately unwrap/expect; production code must not (enforced by the
+// `unwrap_used`/`expect_used = deny` lints in Cargo.toml).
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
+
 pub mod decmpfs;
 pub mod findings;
 #[cfg(feature = "vfs")]
