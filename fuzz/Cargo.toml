@@ -1,0 +1,72 @@
+[package]
+name = "hfsplus-forensic-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+# Standalone workspace: the fuzz crate must not be pulled into the parent
+# crate's build graph (cargo-fuzz drives it directly via `cargo +nightly fuzz`).
+[workspace]
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+# The fuzzed structures (volume header, catalog B-tree nodes, forks, UTF-16
+# names, decmpfs blocks) all live in the reader crate.
+[dependencies.hfsplus-forensic]
+path = ".."
+
+[[bin]]
+name = "volume"
+path = "fuzz_targets/volume.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "walk"
+path = "fuzz_targets/walk.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "list_dir"
+path = "fuzz_targets/list_dir.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "read_file"
+path = "fuzz_targets/read_file.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "stat"
+path = "fuzz_targets/stat.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "decmpfs"
+path = "fuzz_targets/decmpfs.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "audit"
+path = "fuzz_targets/audit.rs"
+test = false
+doc = false
+bench = false
+
+[profile.release]
+debug = 1
