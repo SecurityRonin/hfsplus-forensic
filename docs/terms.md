@@ -4,7 +4,7 @@
 
 ## Licence
 
-hfsplus-forensic is released under the [MIT License](https://github.com/SecurityRonin/hfsplus-forensic/blob/main/LICENSE). You may use, modify, and distribute it subject to the terms of that licence.
+hfsplus-forensic is released under the [Apache License 2.0](https://github.com/SecurityRonin/hfsplus-forensic/blob/main/LICENSE). You may use, modify, and distribute it subject to the terms of that licence.
 
 ## Acceptable Use
 
