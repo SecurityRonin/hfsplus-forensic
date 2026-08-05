@@ -4,6 +4,16 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.7](https://github.com/SecurityRonin/hfsplus-forensic/compare/hfsplus-forensic-v0.2.6...hfsplus-forensic-v0.2.7) - 2026-08-05
+
+### Documentation
+
+- *(terms)* state Apache-2.0, the licence this repo actually ships
+
+### Fixed
+
+- *(supply-chain)* trust our own crates instead of exempting them
+
 ## [0.2.6](https://github.com/SecurityRonin/hfsplus-forensic/compare/hfsplus-forensic-v0.2.5...hfsplus-forensic-v0.2.6) - 2026-07-24
 
 ### Documentation
