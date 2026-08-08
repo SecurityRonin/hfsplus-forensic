@@ -1,0 +1,11 @@
+# Forensic fixtures are byte-exact evidence: a test asserts on the exact bytes
+# a real macOS volume contained. Git's text/binary autodetection only scans the
+# first 8000 bytes for NUL, so a compressed payload whose first NUL falls later
+# is classified as text and gets its LF bytes rewritten to CRLF on checkout
+# under core.autocrlf=true -- the default on GitHub's windows-latest runners.
+# That silently corrupted both the .expected files and several .rsrc/.payload
+# inputs, which is why the decmpfs tests failed only on Windows.
+#
+# Never let git translate anything under a data directory.
+tests/data/** -text
+fuzz/corpus/** -text
