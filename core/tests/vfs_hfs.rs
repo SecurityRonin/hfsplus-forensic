@@ -17,13 +17,13 @@
 use std::sync::Arc;
 
 use forensic_vfs::{FileId, FileSystem, FsKind, NodeKind, StreamId, TimeZonePolicy};
-use hfsplus_forensic::vfs::HfsFs;
+use hfsplus_core::vfs::HfsFs;
 
 /// The committed real HFS+ volume (header at offset 1024, HELLO.TXT/READ.ME/SUBDIR).
 fn volume_bytes() -> Vec<u8> {
     std::fs::read(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/tests/data/hfs_plus_volume.bin"
+        "/../tests/data/hfs_plus_volume.bin"
     ))
     .unwrap()
 }

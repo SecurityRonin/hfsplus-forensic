@@ -1,0 +1,25 @@
+[package]
+name = "hfsplus-forensic"
+version = "0.2.8"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Forensic-grade Apple HFS+/HFSX tamper analyzer — graded findings over the hfsplus-core reader. Re-exports the full reader surface for source compatibility."
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/hfsplus-forensic"
+readme.workspace = true
+keywords = ["forensics", "hfs", "hfsplus", "filesystem", "dfir"]
+categories = ["parser-implementations", "filesystem"]
+
+[features]
+# Forward the reader's vfs adapter so `hfsplus-forensic = { features = ["vfs"] }`
+# keeps working exactly as before the core/forensic split.
+vfs = ["hfsplus-core/vfs"]
+
+[dependencies]
+hfsplus-core = { workspace = true }
+forensicnomicon = { workspace = true }
+
+[lints]
+workspace = true

@@ -14,7 +14,7 @@
 
 use core::fmt;
 
-use crate::{
+use hfsplus_core::{
     be16, be32, decmpfs_xattr, decode_utf16, for_each_record, locate_catalog, locate_extents,
     CatalogLoc, VOLUME_HEADER_OFFSET,
 };
@@ -336,7 +336,7 @@ fn audit_btree_nodes(volume: &[u8], loc: &CatalogLoc, tree: &str, out: &mut Vec<
     let mut node = loc.first_leaf;
     let mut walked = 0u32;
     let mut seen: std::collections::HashSet<u32> = std::collections::HashSet::new();
-    while node != 0 && walked < crate::MAX_LEAF_NODES {
+    while node != 0 && walked < hfsplus_core::MAX_LEAF_NODES {
         walked += 1;
         if !seen.insert(node) {
             // A node revisited means the forward-link chain loops.

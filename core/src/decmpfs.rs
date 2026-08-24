@@ -360,8 +360,8 @@ mod tests {
     // ── REAL macOS data: type-8 LZVN resource fork (ditto --hfsCompression) ──
     #[test]
     fn decodes_real_macos_lzvn_resource_fork() {
-        let fork = include_bytes!("../tests/data/decmpfs/lzvn.rsrc");
-        let expected = include_bytes!("../tests/data/decmpfs/lzvn.expected");
+        let fork = include_bytes!("../../tests/data/decmpfs/lzvn.rsrc");
+        let expected = include_bytes!("../../tests/data/decmpfs/lzvn.expected");
         let hdr = header(8, expected.len() as u64);
         let out = decompress(&hdr, Some(fork)).expect("real LZVN must decode");
         assert_eq!(out, expected, "decoded bytes must match the original file");
@@ -370,8 +370,8 @@ mod tests {
     // ── REAL macOS zlib resource fork (type 4), minted by afsctool -T ZLIB ──
     #[test]
     fn decodes_real_macos_zlib_resource_fork() {
-        let fork = include_bytes!("../tests/data/decmpfs/real_zlib_rsrc.rsrc");
-        let expected = include_bytes!("../tests/data/decmpfs/zlib.expected");
+        let fork = include_bytes!("../../tests/data/decmpfs/real_zlib_rsrc.rsrc");
+        let expected = include_bytes!("../../tests/data/decmpfs/zlib.expected");
         let hdr = header(4, expected.len() as u64);
         let out = decompress(&hdr, Some(fork)).expect("real type-4 zlib must decode");
         assert_eq!(out, expected);
@@ -380,8 +380,8 @@ mod tests {
     // ── REAL macOS inline zlib (type 3), afsctool -T ZLIB on a small file ──
     #[test]
     fn decodes_real_macos_inline_zlib() {
-        let payload = include_bytes!("../tests/data/decmpfs/real_zlib_inline.payload");
-        let expected = include_bytes!("../tests/data/decmpfs/real_zlib_inline.expected");
+        let payload = include_bytes!("../../tests/data/decmpfs/real_zlib_inline.payload");
+        let expected = include_bytes!("../../tests/data/decmpfs/real_zlib_inline.expected");
         let x = xattr(3, expected.len() as u64, payload);
         let out = decompress(&x, None).expect("real type-3 inline zlib must decode");
         assert_eq!(out, expected);
@@ -390,8 +390,8 @@ mod tests {
     // ── inline zlib type 3 with the 0xFF "stored" marker ──
     #[test]
     fn decodes_inline_zlib_stored_marker() {
-        let payload = include_bytes!("../tests/data/decmpfs/zlib_type3_stored.payload");
-        let expected = include_bytes!("../tests/data/decmpfs/zlib_inline.expected");
+        let payload = include_bytes!("../../tests/data/decmpfs/zlib_type3_stored.payload");
+        let expected = include_bytes!("../../tests/data/decmpfs/zlib_inline.expected");
         let x = xattr(3, expected.len() as u64, payload);
         let out = decompress(&x, None).expect("0xFF-stored type-3 must decode");
         assert_eq!(out, expected);
@@ -426,8 +426,8 @@ mod tests {
     // ── REAL macOS LZFSE resource fork (type 12), minted by afsctool -T LZFSE ──
     #[test]
     fn decodes_real_macos_lzfse_resource_fork() {
-        let fork = include_bytes!("../tests/data/decmpfs/real_lzfse_rsrc.rsrc");
-        let expected = include_bytes!("../tests/data/decmpfs/zlib.expected"); // 150K real text
+        let fork = include_bytes!("../../tests/data/decmpfs/real_lzfse_rsrc.rsrc");
+        let expected = include_bytes!("../../tests/data/decmpfs/zlib.expected"); // 150K real text
         let hdr = header(12, expected.len() as u64);
         let out = decompress(&hdr, Some(fork)).expect("real type-12 LZFSE must decode");
         assert_eq!(out, expected);
@@ -436,8 +436,8 @@ mod tests {
     // ── REAL macOS inline LZFSE (type 11), afsctool -T LZFSE on a small file ──
     #[test]
     fn decodes_real_macos_inline_lzfse() {
-        let payload = include_bytes!("../tests/data/decmpfs/real_lzfse_inline.payload");
-        let expected = include_bytes!("../tests/data/decmpfs/real_zlib_inline.expected");
+        let payload = include_bytes!("../../tests/data/decmpfs/real_lzfse_inline.payload");
+        let expected = include_bytes!("../../tests/data/decmpfs/real_zlib_inline.expected");
         let x = xattr(11, expected.len() as u64, payload);
         let out = decompress(&x, None).expect("real type-11 inline LZFSE must decode");
         assert_eq!(out, expected);
@@ -477,8 +477,8 @@ mod tests {
     //    after the end-of-stream opcode — the case strict decoders reject. ──
     #[test]
     fn decodes_real_tahoe_type8_lzvn_with_trailing_bytes() {
-        let fork = include_bytes!("../tests/data/decmpfs/tahoe_type8.rsrc");
-        let expected = include_bytes!("../tests/data/decmpfs/tahoe_type8.expected");
+        let fork = include_bytes!("../../tests/data/decmpfs/tahoe_type8.rsrc");
+        let expected = include_bytes!("../../tests/data/decmpfs/tahoe_type8.expected");
         let hdr = header(8, expected.len() as u64);
         let out = decompress(&hdr, Some(fork)).expect("Tahoe LZVN must decode");
         assert_eq!(out.as_slice(), expected.as_slice());
@@ -487,8 +487,8 @@ mod tests {
     // ── REAL macOS 26.5 (Tahoe) type-9 inline xattr with its 1-byte marker. ──
     #[test]
     fn decodes_real_tahoe_type9_inline_marker() {
-        let xattr_bytes = include_bytes!("../tests/data/decmpfs/tahoe_type9.decmpfs");
-        let expected = include_bytes!("../tests/data/decmpfs/tahoe_type9.expected");
+        let xattr_bytes = include_bytes!("../../tests/data/decmpfs/tahoe_type9.decmpfs");
+        let expected = include_bytes!("../../tests/data/decmpfs/tahoe_type9.expected");
         let out = decompress(xattr_bytes, None).expect("Tahoe type-9 must decode");
         assert_eq!(out.as_slice(), expected.as_slice());
     }

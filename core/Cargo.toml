@@ -1,0 +1,31 @@
+[package]
+name = "hfsplus-core"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "From-scratch Apple HFS+/HFSX reader — volume header geometry, catalog B-tree directory listing, data-fork extraction, and decmpfs transparent decompression, over a byte buffer. No findings; the hfsplus-forensic crate grades over this."
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/hfsplus-core"
+readme.workspace = true
+keywords = ["forensics", "hfs", "hfsplus", "filesystem", "dfir"]
+categories = ["parser-implementations", "filesystem"]
+
+[dependencies]
+flate2 = { workspace = true }
+lzfse_rust = { workspace = true }
+lzvn = { workspace = true }
+# decmpfs format knowledge (magic, type→algorithm/storage map, chunk size). The
+# reader uses `forensicnomicon::decmpfs` constants only, never the report model.
+forensicnomicon = { workspace = true }
+# Optional: the `FileSystem` adapter lives behind the `vfs` feature so a bare
+# reader does not pull it in.
+forensic-vfs = { workspace = true, optional = true }
+
+[features]
+# Enable `impl FileSystem for HfsFs` (the forensic-vfs adapter).
+vfs = ["dep:forensic-vfs"]
+
+[lints]
+workspace = true

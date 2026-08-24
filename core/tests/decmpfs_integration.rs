@@ -8,12 +8,12 @@
 //! fixture is committed.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use hfsplus_forensic as hfs;
+use hfsplus_core as hfs;
 
 fn volume() -> Vec<u8> {
     std::fs::read(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/tests/data/decmpfs/hfs_decmpfs_volume.bin"
+        "/../tests/data/decmpfs/hfs_decmpfs_volume.bin"
     ))
     .unwrap()
 }

@@ -4,12 +4,12 @@
 //   tests/data/hfs_plus_volume.bin  — a small layout-NONE HFS+ volume with
 //                                     HELLO.TXT, READ.ME, and a SUBDIR folder.
 
-use hfsplus_forensic::{self as hfs, HfsKind};
+use hfsplus_core::{self as hfs, HfsKind};
 
 fn header() -> Vec<u8> {
     std::fs::read(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/tests/data/hfs_plus_header.bin"
+        "/../tests/data/hfs_plus_header.bin"
     ))
     .unwrap()
 }
@@ -17,7 +17,7 @@ fn header() -> Vec<u8> {
 fn volume() -> Vec<u8> {
     std::fs::read(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/tests/data/hfs_plus_volume.bin"
+        "/../tests/data/hfs_plus_volume.bin"
     ))
     .unwrap()
 }
@@ -108,7 +108,7 @@ fn stat_returns_size_kind_and_times() {
 fn nested() -> Vec<u8> {
     std::fs::read(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/tests/data/hfs_plus_nested.bin"
+        "/../tests/data/hfs_plus_nested.bin"
     ))
     .unwrap()
 }
