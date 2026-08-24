@@ -1,6 +1,7 @@
 # release-plz owns crates.io publishing + changelogs + per-crate version bumps for
 # this workspace's library crates:
-#   hfsplus-forensic
+#   hfsplus-core       (the reader)
+#   hfsplus-forensic   (the analyzer; depends on hfsplus-core, published after it)
 # It runs on pushes to main (see .github/workflows/release-plz.yml):
 #   - `release-pr`  opens a human-reviewed version-bump PR (conventional commits)
 #   - `release`     publishes any crate whose Cargo.toml version is ahead of

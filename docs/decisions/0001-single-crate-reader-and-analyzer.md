@@ -1,7 +1,13 @@
 # 1. Single crate carries both the HFS+ reader and its forensic analyzer
 
 Date: 2026-07-24
-Status: Accepted
+Status: Superseded by [ADR-0009](0009-split-hfsplus-core-reader-from-forensic-analyzer.md)
+
+> **Superseded 2026-08-24.** A reader-only consumer (`forensic-vfs-engine` and an
+> external archiver) now wants the reader without the findings analyzer.
+> ADR-0009 splits the reader into `hfsplus-core` while keeping `hfsplus-forensic`
+> source-compatible via a facade re-export. The reasoning below records why the
+> crate was single until then.
 
 ## Context
 

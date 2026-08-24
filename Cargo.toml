@@ -1,52 +1,42 @@
-[package]
-name = "hfsplus-forensic"
-version = "0.2.8"
+[workspace]
+resolver = "2"
+members = ["core", "forensic"]
+
+# Single source of truth for fields shared by both members (DRY): the reader
+# (`hfsplus-core`) and the analyzer (`hfsplus-forensic`) publish independently
+# but share edition, license, MSRV floor, repository metadata and lint posture.
+[workspace.package]
 edition = "2021"
 rust-version = "1.85"
 license = "Apache-2.0"
-description = "Forensic-grade, from-scratch Apple HFS+/HFSX reader — volume header geometry, catalog B-tree directory listing, and data-fork file extraction over a byte buffer"
 repository = "https://github.com/SecurityRonin/hfsplus-forensic"
 homepage = "https://github.com/SecurityRonin/hfsplus-forensic"
-documentation = "https://docs.rs/hfsplus-forensic"
 readme = "README.md"
-keywords = ["forensics", "hfs", "hfsplus", "filesystem", "dfir"]
-categories = ["parser-implementations", "filesystem"]
 
-[dependencies]
-# decmpfs transparent-compression codecs (reuse, not reinvent):
-#   zlib/DEFLATE (types 3/4) and LZVN/LZFSE (types 7/8/11/12).
-# Both are pure-Rust, keeping `unsafe_code = "forbid"` intact.
+[workspace.dependencies]
+hfsplus-core = { version = "0.1.0", path = "core" }
+# decmpfs transparent-compression codecs (reuse, not reinvent): zlib/DEFLATE
+# (types 3/4) and LZVN/LZFSE (types 7/8/11/12). All pure-Rust, keeping
+# `unsafe_code = "forbid"` intact.
 flate2 = "1"
-# LZFSE (types 11/12). LZVN (types 7/8) goes through our `lzvn` crate instead:
-# its decode is length-tolerant, which lzfse_rust's strict stream path is not —
-# real macOS decmpfs LZVN blocks carry trailing bytes after end-of-stream.
 lzfse_rust = "0.2"
-# Length-tolerant Apple LZVN decoder (reads real decmpfs blocks with trailing
-# bytes after end-of-stream, which lzfse_rust rejects). Pure-Rust, no_std.
 lzvn = { version = "0.1", package = "lzvn-core" }
-# decmpfs format knowledge (magic, type→algorithm/storage map, chunk size).
+# decmpfs format knowledge (magic, type→algorithm/storage map, chunk size) and
+# the report model for findings.
 forensicnomicon = "1"
-# Universal read-only VFS contract. Optional: the `FileSystem` adapter (src/vfs.rs)
-# lives behind the `vfs` feature so a bare reader does not pull it in. forensic-vfs
-# is safe Rust, so `unsafe_code = "forbid"` stays intact.
-forensic-vfs = { version = "0.7", optional = true }
+safe-read = "0.1"
+# Universal read-only VFS contract. Optional: the `FileSystem` adapter lives
+# behind the `vfs` feature. Safe Rust, so `unsafe_code = "forbid"` stays intact.
+forensic-vfs = { version = "0.9" }
 
-[features]
-# Enable `impl FileSystem for HfsFs` (the forensic-vfs adapter).
-vfs = ["dep:forensic-vfs"]
-
-[lints.rust]
+[workspace.lints.rust]
 unsafe_code = "forbid"
 
-[lints.clippy]
+[workspace.lints.clippy]
 all                      = { level = "warn", priority = -1 }
 pedantic                 = { level = "warn", priority = -1 }
 correctness              = { level = "deny", priority = -1 }
 suspicious               = { level = "deny", priority = -1 }
-# Panic-free posture for this untrusted-input HFS+/HFSX parser: a malformed
-# image must never trigger a panic via unwrap/expect. Tests may still unwrap
-# (see the `#![cfg_attr(test, allow(...))]` in src/lib.rs and the per-file
-# allow in the integration tests under tests/).
 unwrap_used              = { level = "deny", priority = 0 }
 expect_used              = { level = "deny", priority = 0 }
 module_name_repetitions  = { level = "allow", priority = 1 }

@@ -10,10 +10,22 @@ Built for parsing the HFS/HFS+ side of Apple hybrid optical discs and HFS+ volum
 
 ## Install
 
+Two crates. Pick by what you need:
+
 ```toml
 [dependencies]
-hfsplus-forensic = "0.1"
+# Just read HFS+/HFSX volumes (mount adapter, archiver): the reader,
+# including decmpfs transparent decompression — no findings analyzer.
+hfsplus-core = "0.1"
+
+# Read AND grade: the analyzer, which re-exports the full reader so
+# `hfsplus_forensic::…` paths keep working.
+hfsplus-forensic = "0.2"
 ```
+
+`hfsplus-forensic` is a drop-in for the reader too — it re-exports every
+`hfsplus-core` type, so existing `hfsplus_forensic::parse` /
+`hfsplus_forensic::vfs::HfsFs` code needs no change.
 
 ## Quick start
 

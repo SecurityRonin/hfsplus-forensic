@@ -17,7 +17,7 @@ const ATTRIBUTES_FORK_OFFSET: usize = 352;
 fn volume() -> Vec<u8> {
     std::fs::read(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/tests/data/hfs_plus_volume.bin"
+        "/../tests/data/hfs_plus_volume.bin"
     ))
     .unwrap()
 }
@@ -25,7 +25,7 @@ fn volume() -> Vec<u8> {
 fn nested() -> Vec<u8> {
     std::fs::read(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/tests/data/hfs_plus_nested.bin"
+        "/../tests/data/hfs_plus_nested.bin"
     ))
     .unwrap()
 }
@@ -33,7 +33,7 @@ fn nested() -> Vec<u8> {
 fn decmpfs_volume() -> Vec<u8> {
     std::fs::read(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/tests/data/decmpfs/hfs_decmpfs_volume.bin"
+        "/../tests/data/decmpfs/hfs_decmpfs_volume.bin"
     ))
     .unwrap()
 }
