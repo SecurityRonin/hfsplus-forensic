@@ -100,3 +100,50 @@ synthetic fixtures had passed — zlib block offsets are relative to
 - **Note:** these two fixtures exposed two decoder bugs that synthetic `ditto`
   fixtures masked (type-8 strict-trailing reject, fixed via the `lzvn` crate;
   type-9 unstripped marker). 35/35 real Tahoe samples now decode (was 0/35).
+
+#### xattr/hfs_xattr_volume.bin.gz — `REAL-self`
+
+- **What:** a 6 MB bare HFS+ volume carrying four extended attributes, minted to
+  exercise BOTH of the ways HFS+ stores an attribute value.
+- **Source:** minted on macOS 27 (build 26A5425a) by Apple's own HFS+
+  implementation — `hdiutil` created the volume and the kernel driver wrote the
+  attributes. Not redistributed from anywhere; no licence constraint.
+- **Generator (exact):**
+
+  ```bash
+  hdiutil create -megabytes 6 -fs HFS+ -volname HFSXATTR -layout NONE x
+  hdiutil attach x.dmg -nobrowse
+  M=/Volumes/HFSXATTR
+  printf 'hello hfs xattrs\n' > "$M/file.txt"
+  xattr -w com.example.small 'tiny-value'         "$M/file.txt"
+  xattr -w user.comment      'a second attribute' "$M/file.txt"
+  xattr -w com.example.big   "$(python3 -c "import sys;sys.stdout.write('B'*6000)")" "$M/file.txt"
+  mkdir "$M/adir"; xattr -w com.example.dir 'on-a-directory' "$M/adir"
+  sync; hdiutil detach "$M"
+  hdiutil convert x.dmg -format UDTO -o raw          # raw.cdr, bare volume
+  gzip -9 < raw.cdr > hfs_xattr_volume.bin.gz
+  ```
+
+- **`-layout NONE`** is what makes it a BARE volume: the HFS+ signature sits at
+  byte 1024 with no partition map, matching the other fixtures here. Without it
+  the volume starts at byte 20480 and every offset in the tests shifts.
+- **Contents and what each is for:**
+
+  | node | attribute | bytes | HFS+ record type | proves |
+  |---|---|---|---|---|
+  | `file.txt` | `com.example.small` | 10 | `kHFSPlusAttrInlineData` (0x10) | inline value + residency |
+  | `file.txt` | `user.comment` | 18 | `kHFSPlusAttrInlineData` | a file carries SEVERAL attributes |
+  | `file.txt` | `com.example.big` | 6000 | `kHFSPlusAttrForkData` (0x20) | value out in allocation blocks |
+  | `adir` | `com.example.dir` | 14 | `kHFSPlusAttrInlineData` | attributes exist on DIRECTORIES |
+
+  The record types were read out of the minted image and confirmed before the
+  test was written, rather than assumed from the size.
+
+- **Ground truth:** macOS `xattr -l` read every value back through Apple's
+  driver while the volume was still attached. The oracle is therefore an
+  independent implementation, not this crate.
+- **Committed gzipped** (6 MB → 6 KB): the volume is almost entirely zero, and
+  `flate2` is already a dependency, so the test decompresses in-process.
+- **MD5 (gz):** `033781cd1ae40b48b63e99438e1e1b14`
+- **MD5 (raw volume):** `16f82d1b2e106fc7dad8631b4e65ff66`
+- **Used by:** `tests/vfs_xattr_streams.rs`

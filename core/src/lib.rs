@@ -525,6 +525,192 @@ fn attr_inline_value(rec: &[u8], cnid: u32, want_name: &str) -> Option<Vec<u8>> 
     Some(rec[body + 16..end].to_vec())
 }
 
+/// `kHFSPlusAttrForkData` — the attribute's value lives out in allocation
+/// blocks rather than in the B-tree record, because it exceeded the inline
+/// ceiling. `kHFSPlusAttrExtents` (0x30) continues such a fork's extent list.
+const ATTR_FORK_DATA: u32 = 0x20;
+
+/// How HFS+ chose to store an extended attribute's value.
+///
+/// This distinction is evidential, not an implementation detail: it says where
+/// the bytes physically are. Collapsing the two would describe the artifact
+/// wrongly, so the reader reports what the volume actually did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HfsXattrValue {
+    /// `kHFSPlusAttrInlineData` — the value is in the attributes B-tree record.
+    Inline(Vec<u8>),
+    /// `kHFSPlusAttrForkData` — the value occupies allocation blocks, with the
+    /// given logical length.
+    Fork {
+        /// Logical size in bytes, from the record's `HFSPlusForkData`.
+        logical: u64,
+    },
+}
+
+impl HfsXattrValue {
+    /// The value's length in bytes, whichever way it is stored.
+    #[must_use]
+    pub fn len(&self) -> u64 {
+        match self {
+            Self::Inline(b) => b.len() as u64,
+            Self::Fork { logical } => *logical,
+        }
+    }
+
+    /// True when the attribute carries no bytes. (An attribute may legitimately
+    /// exist with an empty value — its PRESENCE is the evidence.)
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
+/// One extended attribute: its name and how the volume stored it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HfsXattr {
+    /// Attribute name, decoded from the key's big-endian UTF-16.
+    pub name: String,
+    /// The stored value, or its length when it lives in a fork.
+    pub value: HfsXattrValue,
+}
+
+/// List every extended attribute attached to `cnid`, in B-tree (name) order.
+///
+/// Returns an empty vector for a file with no attributes AND for a volume with
+/// no attributes B-tree at all — on HFS+ the two are not distinguishable from
+/// the catalog alone, and neither is an error.
+///
+/// `kHFSPlusAttrExtents` (0x30) continuation records are skipped: they carry
+/// further extents for a fork record already listed, so treating one as its own
+/// attribute would report a duplicate under the same name.
+#[must_use]
+pub fn list_xattrs(volume: &[u8], cnid: u32) -> Vec<HfsXattr> {
+    let Some(loc) = locate_attributes(volume) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for_each_record(volume, &loc, |rec| {
+        if let Some(x) = parse_attr_record(rec, cnid) {
+            out.push(x);
+        }
+    });
+    out
+}
+
+/// Read one extended attribute's bytes, materializing a fork-stored value from
+/// its allocation blocks.
+///
+/// Returns `None` when no attribute of that name is attached to `cnid`.
+#[must_use]
+pub fn read_xattr(volume: &[u8], cnid: u32, name: &str) -> Option<Vec<u8>> {
+    let loc = locate_attributes(volume)?;
+    // The attributes B-tree's own CatalogLoc already carries the volume's
+    // allocation block size; re-deriving it from the header would be a second
+    // source of truth for the same number.
+    let block_size = loc.block_size;
+    let mut found = None;
+    for_each_record(volume, &loc, |rec| {
+        if found.is_some() {
+            return;
+        }
+        // Re-parse rather than reuse list_xattrs: a fork-stored value needs the
+        // record's extents, which the public type deliberately does not carry.
+        let Some(key) = attr_key(rec, cnid) else {
+            return;
+        };
+        if key.name != name {
+            return;
+        }
+        let body = key.body;
+        match be32(&rec[body..body + 4]) {
+            ATTR_INLINE_DATA => found = inline_value(rec, body),
+            ATTR_FORK_DATA => {
+                if let Some(fork) = rec.get(body + 8..).and_then(parse_fork) {
+                    found = fork_bytes(volume, block_size, &fork);
+                }
+            }
+            _ => {}
+        }
+    });
+    found
+}
+
+/// The parsed key of an attribute record, when it belongs to `cnid`.
+struct AttrKey {
+    name: String,
+    /// Offset of the record BODY (`recordType`), i.e. just past the key.
+    body: usize,
+    /// First allocation block this record describes. Non-zero only on
+    /// `kHFSPlusAttrExtents` continuation records.
+    start_block: u32,
+}
+
+/// Parse `HFSPlusAttrKey`: keyLength(2) pad(2) fileID@4 startBlock@8
+/// attrNameLen@12 attrName@14 (UTF-16 BE).
+fn attr_key(rec: &[u8], cnid: u32) -> Option<AttrKey> {
+    if rec.len() < 14 {
+        return None;
+    }
+    let key_len = be16(&rec[0..2]) as usize;
+    if be32(&rec[4..8]) != cnid {
+        return None;
+    }
+    let start_block = be32(&rec[8..12]);
+    let name_len = be16(&rec[12..14]) as usize;
+    let name_end = 14usize.checked_add(name_len.checked_mul(2)?)?;
+    if name_end > rec.len() {
+        return None;
+    }
+    let body = 2usize.checked_add(key_len)?;
+    // Every record body starts with a 4-byte recordType.
+    if body.checked_add(4)? > rec.len() {
+        return None;
+    }
+    Some(AttrKey {
+        name: decode_utf16(&rec[14..name_end]),
+        body,
+        start_block,
+    })
+}
+
+/// `HFSPlusAttrData`: recordType@0 reserved[2]@4 attrSize@12 attrData@16.
+fn inline_value(rec: &[u8], body: usize) -> Option<Vec<u8>> {
+    if body.checked_add(16)? > rec.len() {
+        return None;
+    }
+    let attr_size = be32(&rec[body + 12..body + 16]) as usize;
+    let end = body.checked_add(16)?.checked_add(attr_size)?;
+    if end > rec.len() {
+        return None;
+    }
+    Some(rec[body + 16..end].to_vec())
+}
+
+/// Turn one attributes-B-tree record into an [`HfsXattr`], if it is a listable
+/// attribute belonging to `cnid`.
+fn parse_attr_record(rec: &[u8], cnid: u32) -> Option<HfsXattr> {
+    let key = attr_key(rec, cnid)?;
+    // A continuation record describes more extents for a fork already listed.
+    if key.start_block != 0 {
+        return None;
+    }
+    let body = key.body;
+    let value = match be32(&rec[body..body + 4]) {
+        ATTR_INLINE_DATA => HfsXattrValue::Inline(inline_value(rec, body)?),
+        ATTR_FORK_DATA => HfsXattrValue::Fork {
+            logical: parse_fork(rec.get(body + 8..)?)?.logical,
+        },
+        // Any other recordType is not an attribute this reader understands.
+        // Skipped rather than guessed: fabricating a value would be worse than
+        // omitting it, and 0x30 is handled above by start_block.
+        _ => return None,
+    };
+    Some(HfsXattr {
+        name: key.name,
+        value,
+    })
+}
+
 /// Decode a big-endian UTF-16 byte slice to a `String` (lossy).
 pub fn decode_utf16(bytes: &[u8]) -> String {
     let units: Vec<u16> = bytes

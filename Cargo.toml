@@ -55,3 +55,8 @@ manual_let_else          = { level = "allow", priority = 1 }
 [[test]]
 name = "vfs_xattr_streams"
 required-features = ["vfs"]
+
+# TEMPORARY, remove before publish: StreamKind::HfsDataFork landed on
+# forensic-vfs main and is not yet on crates.io.
+[patch.crates-io]
+forensic-vfs = { path = "../forensic-vfs/crates/core" }

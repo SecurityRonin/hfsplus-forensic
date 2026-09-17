@@ -12,8 +12,8 @@
 
 use forensic_vfs::{
     Allocation, DirEntry, DirStream, ExtentStream, FileId, FileSystem, FsKind, FsMeta, MacbTimes,
-    NodeKind, NodeStream, ResidencyKind, SectorSizes, SmallHex, StreamId, TimeResolution,
-    TimeSource, TimeStamp, TimeZonePolicy, VfsError, VfsResult,
+    NodeKind, NodeStream, ResidencyKind, SectorSizes, SmallHex, StreamId, StreamInfo, StreamKind,
+    TimeResolution, TimeSource, TimeStamp, TimeZonePolicy, VfsError, VfsResult,
 };
 
 use crate::{HfsStat, HfsVolume, ROOT_FOLDER_CNID};
@@ -72,6 +72,36 @@ impl HfsFs {
     }
 }
 
+impl HfsFs {
+    /// Serve `StreamId::Xattr(idx)`, where `idx` indexes the list
+    /// `data_streams` reported for this node.
+    ///
+    /// The index is resolved back to a NAME before reading, so the bytes
+    /// returned are the ones belonging to the attribute the caller was shown --
+    /// not whatever now sits at that position.
+    fn read_xattr_at(&self, cnid: u32, idx: u16, off: u64, buf: &mut [u8]) -> VfsResult<usize> {
+        let all = crate::list_xattrs(&self.volume, cnid);
+        let x = all.get(idx as usize).ok_or_else(|| VfsError::Unsupported {
+            layer: "hfs+ xattr index",
+            scheme: format!("attribute {idx} of {} on CNID {cnid}", all.len()),
+        })?;
+        let data =
+            crate::read_xattr(&self.volume, cnid, &x.name).ok_or_else(|| VfsError::Decode {
+                layer: "hfs+ xattr",
+                offset: off,
+                detail: format!("cannot read attribute {} on CNID {cnid}", x.name),
+                bytes: SmallHex::new(&[]),
+            })?;
+        let start = usize::try_from(off).unwrap_or(usize::MAX);
+        if start >= data.len() {
+            return Ok(0);
+        }
+        let n = buf.len().min(data.len() - start);
+        buf[..n].copy_from_slice(&data[start..start + n]);
+        Ok(n)
+    }
+}
+
 impl FileSystem for HfsFs {
     fn kind(&self) -> FsKind {
         FsKind::HFS_PLUS
@@ -126,6 +156,44 @@ impl FileSystem for HfsFs {
             })
             .collect();
         Ok(DirStream::new(out.into_iter()))
+    }
+
+    /// The file's own contents, plus one entry per extended attribute.
+    ///
+    /// Residency is reported as HFS+ actually stored the value -- inline in the
+    /// attributes B-tree record, or out in allocation blocks -- because that is
+    /// a fact about where the bytes are, and flattening it would misdescribe
+    /// the artifact. Attributes are named, not numbered: a caller that can only
+    /// say "attribute 3" cannot write a report.
+    fn data_streams(&self, ino: FileId) -> VfsResult<Vec<StreamInfo>> {
+        let cnid = cnid_of(ino)?;
+        let size = crate::stat(&self.volume, cnid).map_or(0, |s| s.size);
+        let mut out = vec![StreamInfo {
+            id: StreamId::Default,
+            name: None,
+            size,
+            residency: ResidencyKind::NonResident,
+            kind: StreamKind::HfsDataFork,
+        }];
+        for (i, x) in crate::list_xattrs(&self.volume, cnid)
+            .into_iter()
+            .enumerate()
+        {
+            let residency = match &x.value {
+                crate::HfsXattrValue::Inline(b) => ResidencyKind::Resident {
+                    inline_len: u32::try_from(b.len()).unwrap_or(u32::MAX),
+                },
+                crate::HfsXattrValue::Fork { .. } => ResidencyKind::NonResident,
+            };
+            out.push(StreamInfo {
+                id: StreamId::Xattr(u16::try_from(i).unwrap_or(u16::MAX)),
+                name: Some(x.name.clone().into_bytes()),
+                size: x.value.len(),
+                residency,
+                kind: StreamKind::Xattr,
+            });
+        }
+        Ok(out)
     }
 
     fn extents(&self, _ino: FileId, _stream: StreamId) -> VfsResult<ExtentStream> {
@@ -188,6 +256,12 @@ impl FileSystem for HfsFs {
 
     fn read_at(&self, ino: FileId, stream: StreamId, off: u64, buf: &mut [u8]) -> VfsResult<usize> {
         let cnid = cnid_of(ino)?;
+        // Attributes are dispatched BEFORE the default-stream guard: that guard
+        // exists to refuse stream kinds HFS+ does not have, and extended
+        // attributes are a kind it does.
+        if let StreamId::Xattr(idx) = stream {
+            return self.read_xattr_at(cnid, idx, off, buf);
+        }
         if stream != StreamId::Default {
             return Err(VfsError::Unsupported {
                 layer: "hfs+ stream",

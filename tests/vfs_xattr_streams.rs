@@ -95,11 +95,10 @@ fn data_streams_lists_every_extended_attribute() {
     );
 
     let by_name = |n: &str| -> (u64, ResidencyKind) {
-        xattrs
-            .iter()
-            .find(|(name, _, _)| name == n)
-            .map(|(_, sz, r)| (*sz, *r))
-            .unwrap_or_else(|| panic!("attribute {n} missing; got {xattrs:?}"))
+        xattrs.iter().find(|(name, _, _)| name == n).map_or_else(
+            || panic!("attribute {n} missing; got {xattrs:?}"),
+            |(_, sz, r)| (*sz, *r),
+        )
     };
 
     assert_eq!(
