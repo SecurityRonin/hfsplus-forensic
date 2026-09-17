@@ -51,3 +51,7 @@ too_many_lines           = { level = "allow", priority = 1 }
 items_after_statements   = { level = "allow", priority = 1 }
 similar_names            = { level = "allow", priority = 1 }
 manual_let_else          = { level = "allow", priority = 1 }
+
+[[test]]
+name = "vfs_xattr_streams"
+required-features = ["vfs"]
