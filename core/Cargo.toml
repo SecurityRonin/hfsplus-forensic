@@ -29,3 +29,7 @@ vfs = ["dep:forensic-vfs"]
 
 [lints]
 workspace = true
+
+[[test]]
+name = "vfs_xattr_streams"
+required-features = ["vfs"]

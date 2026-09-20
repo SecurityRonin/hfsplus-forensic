@@ -35,7 +35,7 @@ dependencies = [
 
 [[package]]
 name = "forensic-vfs"
-version = "0.7.3"
+version = "0.9.0"
 dependencies = [
  "forensicnomicon-core",
  "state-history-forensic",
@@ -68,14 +68,22 @@ dependencies = [
 ]
 
 [[package]]
-name = "hfsplus-forensic"
-version = "0.2.8"
+name = "hfsplus-core"
+version = "0.1.0"
 dependencies = [
  "flate2",
  "forensic-vfs",
  "forensicnomicon",
  "lzfse_rust",
  "lzvn-core",
+]
+
+[[package]]
+name = "hfsplus-forensic"
+version = "0.3.0"
+dependencies = [
+ "forensicnomicon",
+ "hfsplus-core",
 ]
 
 [[package]]

@@ -44,7 +44,7 @@ use std::io::Read;
 /// The minted volume, decompressed. Committed gzipped: 6 MB of mostly-zero
 /// volume is 7 KB compressed, and `flate2` is already a dependency.
 fn volume() -> Vec<u8> {
-    let gz = include_bytes!("data/xattr/hfs_xattr_volume.bin.gz");
+    let gz = include_bytes!("../../tests/data/xattr/hfs_xattr_volume.bin.gz");
     let mut out = Vec::new();
     flate2::read::GzDecoder::new(&gz[..])
         .read_to_end(&mut out)
@@ -52,13 +52,13 @@ fn volume() -> Vec<u8> {
     out
 }
 
-fn fs() -> hfsplus_forensic::vfs::HfsFs {
-    hfsplus_forensic::vfs::HfsFs::new(volume()).expect("fixture must open as HFS+")
+fn fs() -> hfsplus_core::vfs::HfsFs {
+    hfsplus_core::vfs::HfsFs::new(volume()).expect("fixture must open as HFS+")
 }
 
 /// Resolve a path from the root, so the test never hardcodes a CNID. A CNID is
 /// an allocation detail of the minting run; a NAME is what the oracle used.
-fn find(fs: &hfsplus_forensic::vfs::HfsFs, name: &str) -> forensic_vfs::FileId {
+fn find(fs: &hfsplus_core::vfs::HfsFs, name: &str) -> forensic_vfs::FileId {
     let root = fs.root();
     fs.lookup(root, name.as_bytes())
         .expect("lookup must not error")
