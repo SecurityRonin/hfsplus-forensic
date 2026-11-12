@@ -21,7 +21,7 @@ lzvn = { workspace = true }
 forensicnomicon = { workspace = true }
 # Optional: the `FileSystem` adapter lives behind the `vfs` feature so a bare
 # reader does not pull it in.
-forensic-vfs = { workspace = true, optional = true }
+forensic-vfs = { version = "0.10", optional = true }
 
 [features]
 # Enable `impl FileSystem for HfsFs` (the forensic-vfs adapter).
