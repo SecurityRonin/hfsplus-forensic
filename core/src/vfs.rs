@@ -51,6 +51,21 @@ fn hfs_time(secs: u32) -> TimeStamp {
     }
 }
 
+/// An attributes-B-tree failure as a VFS decode error, keeping the reader's
+/// detail and the bytes it found.
+fn xattr_error(e: &crate::HfsXattrError) -> VfsError {
+    let bytes = match e {
+        crate::HfsXattrError::Record { bytes, .. } => SmallHex::new(bytes),
+        _ => SmallHex::new(&[]),
+    };
+    VfsError::Decode {
+        layer: "hfs+ attributes b-tree",
+        offset: 0,
+        detail: e.to_string(),
+        bytes,
+    }
+}
+
 /// A mounted, read-only HFS+/HFSX volume behind the [`FileSystem`] contract.
 ///
 /// Holds the whole volume in memory (the reader is slice-based), so all reads are
@@ -80,16 +95,20 @@ impl HfsFs {
     /// returned are the ones belonging to the attribute the caller was shown --
     /// not whatever now sits at that position.
     fn read_xattr_at(&self, cnid: u32, idx: u16, off: u64, buf: &mut [u8]) -> VfsResult<usize> {
-        let all = crate::list_xattrs(&self.volume, cnid);
+        let all = crate::list_xattrs(&self.volume, cnid).map_err(|e| xattr_error(&e))?;
         let x = all.get(idx as usize).ok_or_else(|| VfsError::Unsupported {
             layer: "hfs+ xattr index",
             scheme: format!("attribute {idx} of {} on CNID {cnid}", all.len()),
         })?;
-        let data =
-            crate::read_xattr(&self.volume, cnid, &x.name).ok_or_else(|| VfsError::Decode {
+        let data = crate::read_xattr(&self.volume, cnid, &x.name)
+            .map_err(|e| xattr_error(&e))?
+            .ok_or_else(|| VfsError::Decode {
                 layer: "hfs+ xattr",
                 offset: off,
-                detail: format!("cannot read attribute {} on CNID {cnid}", x.name),
+                detail: format!(
+                    "attribute {} on CNID {cnid} was listed but not found when read",
+                    x.name
+                ),
                 bytes: SmallHex::new(&[]),
             })?;
         let start = usize::try_from(off).unwrap_or(usize::MAX);
@@ -176,6 +195,7 @@ impl FileSystem for HfsFs {
             kind: StreamKind::HfsDataFork,
         }];
         for (i, x) in crate::list_xattrs(&self.volume, cnid)
+            .map_err(|e| xattr_error(&e))?
             .into_iter()
             .enumerate()
         {

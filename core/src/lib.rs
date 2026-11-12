@@ -187,35 +187,89 @@ pub(crate) fn locate_btree(volume: &[u8], fork_offset_in_header: usize) -> Optio
 }
 
 /// Walk the catalog leaf-node chain, invoking `f` with each record slice.
+///
+/// Lenient: a node outside the volume or a chain past [`MAX_LEAF_NODES`] ends
+/// the walk, and a record slot outside its node is skipped, all quietly. The
+/// extended-attribute readers use the checked walk instead, which reports each.
 pub fn for_each_record(volume: &[u8], loc: &CatalogLoc, mut f: impl FnMut(&[u8])) {
+    let _ = walk_leaves(volume, loc, false, |rec| {
+        f(rec);
+        Ok(())
+    });
+}
+
+/// The leaf-chain walk behind [`for_each_record`].
+///
+/// A node outside the volume and a chain past [`MAX_LEAF_NODES`] are errors in
+/// both modes (the lenient caller discards them, which is the old quiet stop).
+/// With `strict`, a node declaring more record offsets than it can hold, or a
+/// record offset past its node, is an error too; leniently those are skipped.
+/// `f` stops the walk by returning an error.
+fn walk_leaves(
+    volume: &[u8],
+    loc: &CatalogLoc,
+    strict: bool,
+    mut f: impl FnMut(&[u8]) -> Result<(), HfsXattrError>,
+) -> Result<(), HfsXattrError> {
     let mut node = loc.first_leaf;
     let mut walked = 0u32;
-    while node != 0 && walked < MAX_LEAF_NODES {
+    while node != 0 {
+        if walked >= MAX_LEAF_NODES {
+            return Err(HfsXattrError::LeafChain {
+                node,
+                detail: format!(
+                    "the fLink chain runs past {MAX_LEAF_NODES} leaf nodes, so it loops or is corrupt"
+                ),
+            });
+        }
         walked += 1;
-        let Some(node_off) = (node as usize)
+        let Some(nd) = (node as usize)
             .checked_mul(loc.node_size)
             .and_then(|x| x.checked_add(loc.cat_base))
+            .and_then(|off| volume.get(off..off.checked_add(loc.node_size)?))
         else {
-            break;
+            return Err(HfsXattrError::LeafChain {
+                node,
+                detail: format!(
+                    "node {node} ({}-byte nodes from byte {}) lies outside the {}-byte volume",
+                    loc.node_size,
+                    loc.cat_base,
+                    volume.len()
+                ),
+            });
         };
-        if volume.len() < node_off + loc.node_size {
-            break;
-        }
-        let nd = &volume[node_off..node_off + loc.node_size];
         let f_link = be32(&nd[0..4]);
         let num_records = be16(&nd[10..12]) as usize;
         for i in 0..num_records {
             // Record offsets are stored backwards from the node end.
             let Some(slot) = loc.node_size.checked_sub(2 * (i + 1)) else {
+                if strict {
+                    return Err(HfsXattrError::LeafChain {
+                        node,
+                        detail: format!(
+                            "node {node} declares {num_records} records, more offsets than a {}-byte node holds",
+                            loc.node_size
+                        ),
+                    });
+                }
                 break;
             };
             let rec = be16(&nd[slot..slot + 2]) as usize;
             if rec + 8 <= loc.node_size {
-                f(&nd[rec..]);
+                f(&nd[rec..])?;
+            } else if strict {
+                return Err(HfsXattrError::LeafChain {
+                    node,
+                    detail: format!(
+                        "record {i} of node {node} starts at byte {rec}, past the {}-byte node",
+                        loc.node_size
+                    ),
+                });
             }
         }
         node = f_link;
     }
+    Ok(())
 }
 
 /// List the root directory of an HFS+ volume.  See [`list_dir`].
@@ -574,65 +628,182 @@ pub struct HfsXattr {
     pub value: HfsXattrValue,
 }
 
+/// Why an extended-attribute question could not be answered.
+///
+/// Each variant is damage or an unread structure, never absence: "no such
+/// attribute" is an `Ok` empty list or `Ok(None)`, and an error here means the
+/// volume could not say.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum HfsXattrError {
+    /// The volume header declares an attributes file (non-zero `totalBlocks`),
+    /// but its B-tree header cannot be used.
+    AttributesBtree {
+        /// What is wrong with it.
+        detail: String,
+    },
+    /// The attributes B-tree's leaf chain could not be walked to its end.
+    LeafChain {
+        /// The node where the walk stopped.
+        node: u32,
+        /// What is wrong with it.
+        detail: String,
+    },
+    /// A record of this file's attributes could not be decoded.
+    Record {
+        /// The attribute's name, when the key was readable enough to give one.
+        name: Option<String>,
+        /// What is wrong with it.
+        detail: String,
+        /// The record's first bytes, as found.
+        bytes: Vec<u8>,
+    },
+}
+
+impl std::fmt::Display for HfsXattrError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::AttributesBtree { detail } => write!(f, "attributes B-tree unreadable: {detail}"),
+            Self::LeafChain { node, detail } => {
+                write!(
+                    f,
+                    "attributes B-tree leaf chain broken at node {node}: {detail}"
+                )
+            }
+            Self::Record {
+                name,
+                detail,
+                bytes,
+            } => {
+                let hex = bytes.iter().fold(String::new(), |mut s, b| {
+                    let _ = std::fmt::Write::write_fmt(&mut s, format_args!("{b:02x}"));
+                    s
+                });
+                match name {
+                    Some(n) => write!(f, "attribute {n}: {detail} (record starts {hex})"),
+                    None => write!(f, "attribute record: {detail} (record starts {hex})"),
+                }
+            }
+        }
+    }
+}
+
+impl std::error::Error for HfsXattrError {}
+
+/// The first bytes of a record, for an error that has to show what it found.
+fn record_prefix(rec: &[u8]) -> Vec<u8> {
+    rec[..rec.len().min(32)].to_vec()
+}
+
+/// The attributes B-tree, `Ok(None)` when the volume header says there is no
+/// attributes file, and an error when it says there is one that cannot be used.
+fn attributes_btree(volume: &[u8]) -> Result<Option<CatalogLoc>, HfsXattrError> {
+    let fork = VOLUME_HEADER_OFFSET + ATTRIBUTES_FORK_OFFSET;
+    let Some(total_blocks) = volume.get(fork + 12..fork + 16) else {
+        return Err(HfsXattrError::AttributesBtree {
+            detail: format!(
+                "the {}-byte volume ends before the attributes fork record at byte {fork}",
+                volume.len()
+            ),
+        });
+    };
+    if be32(total_blocks) == 0 {
+        return Ok(None);
+    }
+    locate_attributes(volume)
+        .map(Some)
+        .ok_or_else(|| HfsXattrError::AttributesBtree {
+            detail: format!(
+                "the volume header declares {} attributes-file blocks, but the B-tree header is unusable (bad signature, block size, location or node size)",
+                be32(total_blocks)
+            ),
+        })
+}
+
 /// List every extended attribute attached to `cnid`, in B-tree (name) order.
 ///
-/// Returns an empty vector for a file with no attributes AND for a volume with
-/// no attributes B-tree at all — on HFS+ the two are not distinguishable from
-/// the catalog alone, and neither is an error.
+/// Returns an empty vector for a file with no attributes and for a volume whose
+/// header declares no attributes file; neither is an error.
 ///
 /// `kHFSPlusAttrExtents` (0x30) continuation records are skipped: they carry
 /// further extents for a fork record already listed, so treating one as its own
 /// attribute would report a duplicate under the same name.
-#[must_use]
-pub fn list_xattrs(volume: &[u8], cnid: u32) -> Vec<HfsXattr> {
-    let Some(loc) = locate_attributes(volume) else {
-        return Vec::new();
+///
+/// # Errors
+///
+/// [`HfsXattrError`] when the attributes B-tree is declared but unusable, its
+/// leaf chain cannot be walked to the end, or a record of this file cannot be
+/// decoded (including a record type this reader does not know). The list would
+/// otherwise be silently incomplete.
+pub fn list_xattrs(volume: &[u8], cnid: u32) -> Result<Vec<HfsXattr>, HfsXattrError> {
+    let Some(loc) = attributes_btree(volume)? else {
+        return Ok(Vec::new());
     };
     let mut out = Vec::new();
-    for_each_record(volume, &loc, |rec| {
-        if let Some(x) = parse_attr_record(rec, cnid) {
+    walk_leaves(volume, &loc, true, |rec| {
+        if let Some(x) = parse_attr_record(rec, cnid)? {
             out.push(x);
         }
-    });
-    out
+        Ok(())
+    })?;
+    Ok(out)
 }
 
 /// Read one extended attribute's bytes, materializing a fork-stored value from
 /// its allocation blocks.
 ///
-/// Returns `None` when no attribute of that name is attached to `cnid`.
-#[must_use]
-pub fn read_xattr(volume: &[u8], cnid: u32, name: &str) -> Option<Vec<u8>> {
-    let loc = locate_attributes(volume)?;
+/// Returns `Ok(None)` when no attribute of that name is attached to `cnid`.
+///
+/// # Errors
+///
+/// As [`list_xattrs`], and when a fork-stored value's extents cannot be read
+/// or cover less than its logical length. A short value is never returned as
+/// if it were whole.
+pub fn read_xattr(volume: &[u8], cnid: u32, name: &str) -> Result<Option<Vec<u8>>, HfsXattrError> {
+    let Some(loc) = attributes_btree(volume)? else {
+        return Ok(None);
+    };
     // The attributes B-tree's own CatalogLoc already carries the volume's
     // allocation block size; re-deriving it from the header would be a second
     // source of truth for the same number.
     let block_size = loc.block_size;
     let mut found = None;
-    for_each_record(volume, &loc, |rec| {
+    walk_leaves(volume, &loc, true, |rec| {
         if found.is_some() {
-            return;
+            return Ok(());
         }
         // Re-parse rather than reuse list_xattrs: a fork-stored value needs the
         // record's extents, which the public type deliberately does not carry.
-        let Some(key) = attr_key(rec, cnid) else {
-            return;
+        let Some(key) = attr_key(rec, cnid)? else {
+            return Ok(());
         };
-        if key.name != name {
-            return;
+        if key.name != name || key.start_block != 0 {
+            return Ok(());
         }
         let body = key.body;
-        match be32(&rec[body..body + 4]) {
-            ATTR_INLINE_DATA => found = inline_value(rec, body),
+        found = Some(match be32(&rec[body..body + 4]) {
+            ATTR_INLINE_DATA => inline_value(rec, &key)?,
             ATTR_FORK_DATA => {
-                if let Some(fork) = rec.get(body + 8..).and_then(parse_fork) {
-                    found = fork_bytes(volume, block_size, &fork);
+                let fork = fork_record(rec, &key)?;
+                let bytes = fork_bytes(volume, block_size, &fork).unwrap_or_default();
+                if (bytes.len() as u64) < fork.logical {
+                    return Err(HfsXattrError::Record {
+                        name: Some(key.name),
+                        detail: format!(
+                            "its extents yield {} of its {} bytes; the rest is in kHFSPlusAttrExtents records or past the volume end, and this reader does not assemble it",
+                            bytes.len(),
+                            fork.logical
+                        ),
+                        bytes: record_prefix(rec),
+                    });
                 }
+                bytes
             }
-            _ => {}
-        }
-    });
-    found
+            other => return Err(unknown_record_type(rec, key, other)),
+        });
+        Ok(())
+    })?;
+    Ok(found)
 }
 
 /// The parsed key of an attribute record, when it belongs to `cnid`.
@@ -647,68 +818,128 @@ struct AttrKey {
 
 /// Parse `HFSPlusAttrKey`: keyLength(2) pad(2) fileID@4 startBlock@8
 /// attrNameLen@12 attrName@14 (UTF-16 BE).
-fn attr_key(rec: &[u8], cnid: u32) -> Option<AttrKey> {
+///
+/// `Ok(None)` for a record of another file. A key too short to name its file is
+/// an error: it might be this file's, so skipping it could hide an attribute.
+fn attr_key(rec: &[u8], cnid: u32) -> Result<Option<AttrKey>, HfsXattrError> {
+    let damaged = |name: Option<String>, detail: String| HfsXattrError::Record {
+        name,
+        detail,
+        bytes: record_prefix(rec),
+    };
     if rec.len() < 14 {
-        return None;
+        return Err(damaged(
+            None,
+            format!(
+                "a {}-byte record is too short for its 14-byte key header",
+                rec.len()
+            ),
+        ));
     }
     let key_len = be16(&rec[0..2]) as usize;
     if be32(&rec[4..8]) != cnid {
-        return None;
+        return Ok(None);
     }
     let start_block = be32(&rec[8..12]);
     let name_len = be16(&rec[12..14]) as usize;
-    let name_end = 14usize.checked_add(name_len.checked_mul(2)?)?;
-    if name_end > rec.len() {
-        return None;
-    }
-    let body = 2usize.checked_add(key_len)?;
+    let name_end = 14 + name_len * 2;
+    let Some(name_bytes) = rec.get(14..name_end) else {
+        return Err(damaged(
+            None,
+            format!(
+                "its {name_len}-character name runs past the {}-byte record",
+                rec.len()
+            ),
+        ));
+    };
+    let name = decode_utf16(name_bytes);
+    let body = 2 + key_len;
     // Every record body starts with a 4-byte recordType.
-    if body.checked_add(4)? > rec.len() {
-        return None;
+    if body + 4 > rec.len() {
+        return Err(damaged(
+            Some(name),
+            format!(
+                "keyLength {key_len} puts the record body past the {}-byte record",
+                rec.len()
+            ),
+        ));
     }
-    Some(AttrKey {
-        name: decode_utf16(&rec[14..name_end]),
+    Ok(Some(AttrKey {
+        name,
         body,
         start_block,
-    })
+    }))
 }
 
 /// `HFSPlusAttrData`: recordType@0 reserved[2]@4 attrSize@12 attrData@16.
-fn inline_value(rec: &[u8], body: usize) -> Option<Vec<u8>> {
-    if body.checked_add(16)? > rec.len() {
-        return None;
+fn inline_value(rec: &[u8], key: &AttrKey) -> Result<Vec<u8>, HfsXattrError> {
+    let body = key.body;
+    let size = rec.get(body + 12..body + 16).map(|b| be32(b) as usize);
+    match size.and_then(|n| rec.get(body + 16..body + 16 + n)) {
+        Some(v) => Ok(v.to_vec()),
+        None => Err(HfsXattrError::Record {
+            name: Some(key.name.clone()),
+            detail: match size {
+                Some(n) => format!(
+                    "its inline attrSize {n} runs past the {}-byte record",
+                    rec.len()
+                ),
+                None => format!(
+                    "the {}-byte record ends inside its inline-data header",
+                    rec.len()
+                ),
+            },
+            bytes: record_prefix(rec),
+        }),
     }
-    let attr_size = be32(&rec[body + 12..body + 16]) as usize;
-    let end = body.checked_add(16)?.checked_add(attr_size)?;
-    if end > rec.len() {
-        return None;
+}
+
+/// `HFSPlusAttrForkData`: recordType(4) reserved(4) theFork(80)@8.
+fn fork_record(rec: &[u8], key: &AttrKey) -> Result<Fork, HfsXattrError> {
+    rec.get(key.body + 8..)
+        .and_then(parse_fork)
+        .ok_or_else(|| HfsXattrError::Record {
+            name: Some(key.name.clone()),
+            detail: format!(
+                "the {}-byte record ends inside its 80-byte fork data",
+                rec.len()
+            ),
+            bytes: record_prefix(rec),
+        })
+}
+
+/// A record type this reader does not decode. Reported with the value found
+/// rather than skipped: skipping would present the attribute as absent.
+fn unknown_record_type(rec: &[u8], key: AttrKey, record_type: u32) -> HfsXattrError {
+    HfsXattrError::Record {
+        name: Some(key.name),
+        detail: format!("record type 0x{record_type:08x} is not one this reader decodes"),
+        bytes: record_prefix(rec),
     }
-    Some(rec[body + 16..end].to_vec())
 }
 
 /// Turn one attributes-B-tree record into an [`HfsXattr`], if it is a listable
 /// attribute belonging to `cnid`.
-fn parse_attr_record(rec: &[u8], cnid: u32) -> Option<HfsXattr> {
-    let key = attr_key(rec, cnid)?;
+fn parse_attr_record(rec: &[u8], cnid: u32) -> Result<Option<HfsXattr>, HfsXattrError> {
+    let Some(key) = attr_key(rec, cnid)? else {
+        return Ok(None);
+    };
     // A continuation record describes more extents for a fork already listed.
     if key.start_block != 0 {
-        return None;
+        return Ok(None);
     }
     let body = key.body;
     let value = match be32(&rec[body..body + 4]) {
-        ATTR_INLINE_DATA => HfsXattrValue::Inline(inline_value(rec, body)?),
+        ATTR_INLINE_DATA => HfsXattrValue::Inline(inline_value(rec, &key)?),
         ATTR_FORK_DATA => HfsXattrValue::Fork {
-            logical: parse_fork(rec.get(body + 8..)?)?.logical,
+            logical: fork_record(rec, &key)?.logical,
         },
-        // Any other recordType is not an attribute this reader understands.
-        // Skipped rather than guessed: fabricating a value would be worse than
-        // omitting it, and 0x30 is handled above by start_block.
-        _ => return None,
+        other => return Err(unknown_record_type(rec, key, other)),
     };
-    Some(HfsXattr {
+    Ok(Some(HfsXattr {
         name: key.name,
         value,
-    })
+    }))
 }
 
 /// Decode a big-endian UTF-16 byte slice to a `String` (lossy).
