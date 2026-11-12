@@ -102,6 +102,7 @@ impl HfsFs {
         })?;
         let data = crate::read_xattr(&self.volume, cnid, &x.name)
             .map_err(|e| xattr_error(&e))?
+            // cov:unreachable: list_xattrs just listed this name, and read_xattr walks the same immutable volume with the same key test (this CNID, startBlock 0), so it finds it or errors
             .ok_or_else(|| VfsError::Decode {
                 layer: "hfs+ xattr",
                 offset: off,

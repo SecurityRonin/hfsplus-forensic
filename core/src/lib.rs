@@ -1004,3 +1004,87 @@ pub fn walk(volume: &[u8]) -> Option<Vec<HfsPathEntry>> {
     }
     Some(out)
 }
+
+#[cfg(test)]
+mod xattr_record_tests {
+    //! Damage the extended-attribute readers can only meet below the VFS layer,
+    //! on hand-built records and nodes too small to stage in the real fixture.
+    use super::{parse_attr_record, walk_leaves, CatalogLoc, HfsXattrError};
+
+    /// A key for CNID 7, startBlock 0, one-character name "a". keyLength 14
+    /// puts the body (recordType) at byte 16.
+    fn key_then(record_type: u32, total_len: usize) -> Vec<u8> {
+        let mut r = vec![0u8; total_len];
+        r[0..2].copy_from_slice(&14u16.to_be_bytes());
+        r[4..8].copy_from_slice(&7u32.to_be_bytes());
+        r[12..14].copy_from_slice(&1u16.to_be_bytes());
+        r[14..16].copy_from_slice(&u16::from(b'a').to_be_bytes());
+        r[16..20].copy_from_slice(&record_type.to_be_bytes());
+        r
+    }
+
+    #[test]
+    fn an_inline_record_ending_inside_its_header_is_an_error() {
+        let err = parse_attr_record(&key_then(0x10, 20), 7).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("ends inside its inline-data header"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn a_fork_record_ending_inside_its_fork_data_is_an_error() {
+        let err = parse_attr_record(&key_then(0x20, 40), 7).unwrap_err();
+        assert!(err.to_string().contains("80-byte fork data"), "{err}");
+    }
+
+    /// `kHFSPlusAttrExtents` continuations carry a non-zero startBlock and more
+    /// extents for a fork already listed; listing one would duplicate it.
+    #[test]
+    fn a_continuation_record_is_not_listed_as_its_own_attribute() {
+        let mut r = key_then(0x30, 40);
+        r[8..12].copy_from_slice(&5u32.to_be_bytes());
+        assert_eq!(parse_attr_record(&r, 7), Ok(None));
+    }
+
+    /// An empty value is still an attribute: its presence is the evidence.
+    #[test]
+    fn an_attribute_with_an_empty_value_is_listed_and_reports_empty() {
+        let mut r = key_then(0x10, 40); // attrSize 0
+        r[28..32].copy_from_slice(&0u32.to_be_bytes());
+        let x = parse_attr_record(&r, 7).unwrap().unwrap();
+        assert_eq!(x.name, "a");
+        assert!(x.value.is_empty());
+        assert!(!super::HfsXattrValue::Fork { logical: 1 }.is_empty());
+    }
+
+    #[test]
+    fn a_record_of_another_file_is_not_this_files_business() {
+        assert_eq!(parse_attr_record(&key_then(0x99, 20), 8), Ok(None));
+    }
+
+    /// A node whose record count needs more offset slots than the node has
+    /// bytes. Every slot the walk can read points at byte 0 or 40, both inside
+    /// the node, so the count is what fails.
+    #[test]
+    fn a_strict_walk_reports_a_record_count_the_node_cannot_hold() {
+        let mut vol = vec![0u8; 128];
+        vol[64 + 10..64 + 12].copy_from_slice(&40u16.to_be_bytes());
+        let loc = CatalogLoc {
+            cat_base: 0,
+            node_size: 64,
+            first_leaf: 1,
+            block_size: 512,
+        };
+        let err = walk_leaves(&vol, &loc, true, |_| Ok(())).unwrap_err();
+        assert!(
+            matches!(&err, HfsXattrError::LeafChain { node: 1, detail } if detail.contains("declares 40 records")),
+            "{err:?}"
+        );
+        // The lenient walk keeps its old contract: it stops quietly.
+        let mut seen = 0;
+        super::for_each_record(&vol, &loc, |_| seen += 1);
+        assert_eq!(seen, 32, "every slot that fits is still visited");
+    }
+}
