@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0](https://github.com/SecurityRonin/hfsplus-forensic/compare/hfsplus-core-v0.1.0...hfsplus-core-v0.2.0) - 2026-11-12
+
+### Added
+
+- *(vfs)* GREEN - enumerate HFS+ extended attributes as streams
+
+### Fixed
+
+- *(vfs)* [**breaking**] implement forensic-vfs 0.10, the trait the engine links against
+- *(tests)* re-home the xattr test after origin split the crate into core/
+- *(xattr)* report a damaged attributes B-tree instead of listing fewer attributes
+
 ## [0.1.0](https://github.com/SecurityRonin/hfsplus-forensic/releases/tag/hfsplus-core-v0.1.0) - 2026-08-24
 
 ### Documentation

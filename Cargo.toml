@@ -14,7 +14,7 @@ homepage = "https://github.com/SecurityRonin/hfsplus-forensic"
 readme = "README.md"
 
 [workspace.dependencies]
-hfsplus-core = { version = "0.1.0", path = "core" }
+hfsplus-core = { version = "0.2.0", path = "core" }
 # decmpfs transparent-compression codecs (reuse, not reinvent): zlib/DEFLATE
 # (types 3/4) and LZVN/LZFSE (types 7/8/11/12). All pure-Rust, keeping
 # `unsafe_code = "forbid"` intact.
