@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0](https://github.com/SecurityRonin/hfsplus-forensic/compare/hfsplus-forensic-v0.3.0...hfsplus-forensic-v0.4.0) - 2026-11-12
+
+### Documentation
+
+- *(forensic)* [**breaking**] record that hfsplus-core types in our API make this breaking
+
+### Other
+
+- updated the following local packages: hfsplus-core
+
 ## [0.3.0](https://github.com/SecurityRonin/hfsplus-forensic/compare/hfsplus-forensic-v0.2.8...hfsplus-forensic-v0.3.0) - 2026-08-24
 
 ### Other
