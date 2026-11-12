@@ -1,5 +1,8 @@
 //! HFS+ / HFSX forensic analyzer, and the reader it grades over.
 //!
+//! Public items here take or return `hfsplus_core` types (the whole reader, via `pub use hfsplus_core::*`), so `hfsplus-core` is a
+//! public dependency: an incompatible `hfsplus-core` changes this crate's API as well.
+//!
 //! This crate is the anomaly auditor: [`findings`] emits
 //! [`forensicnomicon::report`] observations over the parsed volume produced by
 //! the [`hfsplus_core`] reader.
